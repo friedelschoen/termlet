@@ -89,6 +89,182 @@ static struct win_char *win_chars_resize(struct win_char *chars, struct win_rect
 	return new;
 }
 
+static void win_layout_apply_bounds_edge(struct win_state *w, struct win_rect *a, uint16_t *edge_shadow) {
+	if (win_rect_empty(*a))
+		return;
+
+	uint16_t size;
+
+	switch (w->edge) {
+		case WIN_EDGE_TOP:
+		case WIN_EDGE_BOTTOM:
+			size = w->height;
+
+			if (win_rect_height(*a) < size + 1)
+				return;
+
+			w->win_bounds.x0 = a->x0;
+			w->chars_bounds.x0 = a->x0;
+			w->win_bounds.x1 = a->x1;
+			w->chars_bounds.x1 = a->x1;
+
+			if (w->edge == WIN_EDGE_TOP) {
+				w->win_bounds.y0 = a->y0;
+				w->chars_bounds.y0 = a->y0;
+				w->win_bounds.y1 = a->y0 + size + 1;
+				w->chars_bounds.y1 = a->y0 + size;
+			} else {
+				w->win_bounds.y0 = a->y1 - size - 1;
+				w->chars_bounds.y0 = a->y1 - size;
+				w->win_bounds.y1 = a->y1;
+				w->chars_bounds.y1 = a->y1;
+			}
+			break;
+
+		case WIN_EDGE_LEFT:
+		case WIN_EDGE_RIGHT:
+			size = w->width;
+
+			if (win_rect_width(*a) < size)
+				return;
+
+			w->win_bounds.y0 = a->y0;
+			w->chars_bounds.y0 = a->y0;
+			w->win_bounds.y1 = a->y1;
+			w->chars_bounds.y1 = a->y1;
+
+			if (w->edge == WIN_EDGE_LEFT) {
+				w->win_bounds.x0 = a->x0;
+				w->chars_bounds.x0 = a->x0;
+				w->win_bounds.x1 = a->x0 + size + 1;
+				w->chars_bounds.x1 = a->x0 + size;
+			} else {
+				w->win_bounds.x0 = a->x1 - size - 1;
+				w->chars_bounds.x0 = a->x1 - size;
+				w->win_bounds.x1 = a->x1;
+				w->chars_bounds.x1 = a->x1;
+			}
+			break;
+	}
+
+	if (w->mode == WIN_MODE_OVERLAY) {
+		/*
+		 * Overlays don't consume available space. Multiple
+		 * overlays on the same edge overlap from the same
+		 * origin, so their shadow is the maximum size rather
+		 * than the sum.
+		 */
+		edge_shadow[w->edge] =
+		    MAX(edge_shadow[w->edge], size + 1);
+
+		w->visible = true;
+		return;
+	}
+
+	/*
+	 * A clip still consumes layout space even when it is
+	 * completely hidden behind an overlay.
+	 */
+	w->visible = edge_shadow[w->edge] < size + 1;
+
+	switch (w->edge) {
+		case WIN_EDGE_TOP:
+			a->y0 += size + 1;
+			break;
+
+		case WIN_EDGE_BOTTOM:
+			a->y1 -= size + 1;
+			break;
+
+		case WIN_EDGE_LEFT:
+			a->x0 += size + 1;
+			break;
+
+		case WIN_EDGE_RIGHT:
+			a->x1 -= size + 1;
+			break;
+	}
+
+	/*
+	 * Moving the available edge through this clip also moves
+	 * past the corresponding part of the overlay shadow.
+	 */
+	if (edge_shadow[w->edge] > size + 1)
+		edge_shadow[w->edge] -= size + 1;
+	else
+		edge_shadow[w->edge] = 0;
+}
+
+static void win_layout_apply_bounds(struct win_layout *l, int *order, int win, struct win_rect *a, bool *main_done, uint16_t *edge_shadow) {
+	struct win_state *w = &l->windows[order[win]];
+
+	/* reset state */
+	w->visible = false;
+
+	switch (w->mode) {
+		case WIN_MODE_MAIN:
+			if (*main_done || win_rect_empty(*a))
+				break;
+
+			w->win_bounds = *a;
+			w->chars_bounds = *a;
+			w->visible = true;
+			*main_done = true;
+			break;
+
+		case WIN_MODE_DIALOG: {
+			if (w->width + 2 > win_rect_width(l->bounds) ||
+			    w->height + 2 > win_rect_height(l->bounds))
+				break;
+
+			uint16_t x = l->bounds.x0 +
+			             (win_rect_width(l->bounds) - w->width) / 2;
+			uint16_t y = l->bounds.y0 +
+			             (win_rect_height(l->bounds) - w->height) / 2;
+
+			w->chars_bounds = (struct win_rect){
+				.x0 = x,
+				.y0 = y,
+				.x1 = x + w->width,
+				.y1 = y + w->height,
+			};
+
+			w->win_bounds = (struct win_rect){
+				.x0 = x - 1,
+				.y0 = y - 1,
+				.x1 = x + w->width + 1,
+				.y1 = y + w->height + 1,
+			};
+
+			bool covered = false;
+
+			for (int j = 0; j < win; j++) {
+				struct win_state *other = &l->windows[order[j]];
+
+				if (other->mode != WIN_MODE_DIALOG ||
+				    !other->visible)
+					continue;
+
+				if (win_rect_contains_rect(other->win_bounds,
+				                           w->win_bounds)) {
+					covered = true;
+					break;
+				}
+			}
+
+			if (!covered)
+				w->visible = true;
+
+			break;
+		}
+
+		case WIN_MODE_CLIP:
+		case WIN_MODE_OVERLAY:
+			win_layout_apply_bounds_edge(w, a, edge_shadow);
+			break;
+	}
+}
+
 static void win_layout_apply(struct win_layout *l, int *order, int order_count) {
 	struct win_rect a = l->bounds;
 	uint16_t edge_shadow[4] = { 0 };
@@ -101,181 +277,7 @@ static void win_layout_apply(struct win_layout *l, int *order, int order_count) 
 		struct win_rect old_win_bounds = w->win_bounds;
 		bool old_visible = w->visible;
 
-		/* reset state */
-		w->visible = false;
-
-		switch (w->mode) {
-			case WIN_MODE_MAIN:
-				if (main_done || win_rect_empty(a))
-					break;
-
-				w->win_bounds = a;
-				w->chars_bounds = a;
-				w->visible = true;
-				main_done = true;
-				break;
-
-			case WIN_MODE_DIALOG: {
-				if (w->width + 2 > win_rect_width(l->bounds) ||
-				    w->height + 2 > win_rect_height(l->bounds))
-					break;
-
-				uint16_t x = l->bounds.x0 +
-				             (win_rect_width(l->bounds) - w->width) / 2;
-				uint16_t y = l->bounds.y0 +
-				             (win_rect_height(l->bounds) - w->height) / 2;
-
-				w->chars_bounds = (struct win_rect){
-					.x0 = x,
-					.y0 = y,
-					.x1 = x + w->width,
-					.y1 = y + w->height,
-				};
-
-				w->win_bounds = (struct win_rect){
-					.x0 = x - 1,
-					.y0 = y - 1,
-					.x1 = x + w->width + 1,
-					.y1 = y + w->height + 1,
-				};
-
-				bool covered = false;
-
-				for (int j = 0; j < win; j++) {
-					struct win_state *other = &l->windows[order[j]];
-
-					if (other->mode != WIN_MODE_DIALOG ||
-					    !other->visible)
-						continue;
-
-					if (win_rect_contains_rect(other->win_bounds,
-					                           w->win_bounds)) {
-						covered = true;
-						break;
-					}
-				}
-
-				if (!covered)
-					w->visible = true;
-
-				break;
-			}
-
-			case WIN_MODE_CLIP:
-			case WIN_MODE_OVERLAY: {
-				if (win_rect_empty(a))
-					break;
-
-				uint16_t size;
-				bool placed = false;
-
-				switch (w->edge) {
-					case WIN_EDGE_TOP:
-					case WIN_EDGE_BOTTOM:
-						size = w->height;
-
-						if (win_rect_height(a) < size + 1)
-							break;
-
-						w->win_bounds.x0 = a.x0;
-						w->chars_bounds.x0 = a.x0;
-						w->win_bounds.x1 = a.x1;
-						w->chars_bounds.x1 = a.x1;
-
-						if (w->edge == WIN_EDGE_TOP) {
-							w->win_bounds.y0 = a.y0;
-							w->chars_bounds.y0 = a.y0;
-							w->win_bounds.y1 = a.y0 + size + 1;
-							w->chars_bounds.y1 = a.y0 + size;
-						} else {
-							w->win_bounds.y0 = a.y1 - size - 1;
-							w->chars_bounds.y0 = a.y1 - size;
-							w->win_bounds.y1 = a.y1;
-							w->chars_bounds.y1 = a.y1;
-						}
-						placed = true;
-						break;
-
-					case WIN_EDGE_LEFT:
-					case WIN_EDGE_RIGHT:
-						size = w->width;
-
-						if (win_rect_width(a) < size)
-							break;
-
-						w->win_bounds.y0 = a.y0;
-						w->chars_bounds.y0 = a.y0;
-						w->win_bounds.y1 = a.y1;
-						w->chars_bounds.y1 = a.y1;
-
-						if (w->edge == WIN_EDGE_LEFT) {
-							w->win_bounds.x0 = a.x0;
-							w->chars_bounds.x0 = a.x0;
-							w->win_bounds.x1 = a.x0 + size + 1;
-							w->chars_bounds.x1 = a.x0 + size;
-						} else {
-							w->win_bounds.x0 = a.x1 - size - 1;
-							w->chars_bounds.x0 = a.x1 - size;
-							w->win_bounds.x1 = a.x1;
-							w->chars_bounds.x1 = a.x1;
-						}
-						placed = true;
-						break;
-				}
-
-				if (!placed)
-					break;
-
-				if (w->mode == WIN_MODE_OVERLAY) {
-					/*
-					 * Overlays don't consume available space. Multiple
-					 * overlays on the same edge overlap from the same
-					 * origin, so their shadow is the maximum size rather
-					 * than the sum.
-					 */
-					edge_shadow[w->edge] =
-					    MAX(edge_shadow[w->edge], size + 1);
-
-					w->visible = true;
-					break;
-				}
-
-				/*
-				 * A clip still consumes layout space even when it is
-				 * completely hidden behind an overlay.
-				 */
-				w->visible = edge_shadow[w->edge] < size + 1;
-
-				switch (w->edge) {
-					case WIN_EDGE_TOP:
-						a.y0 += size + 1;
-						break;
-
-					case WIN_EDGE_BOTTOM:
-						a.y1 -= size + 1;
-						break;
-
-					case WIN_EDGE_LEFT:
-						a.x0 += size + 1;
-						break;
-
-					case WIN_EDGE_RIGHT:
-						a.x1 -= size + 1;
-						break;
-				}
-
-				/*
-				 * Moving the available edge through this clip also moves
-				 * past the corresponding part of the overlay shadow.
-				 */
-				if (edge_shadow[w->edge] > size + 1)
-					edge_shadow[w->edge] -= size + 1;
-				else
-					edge_shadow[w->edge] = 0;
-
-				break;
-			}
-		}
+		win_layout_apply_bounds(l, order, win, &a, &main_done, edge_shadow);
 
 		if (w->chars) {
 			w->chars = win_chars_resize(w->chars, old_chars_bounds, w->chars_bounds);
@@ -286,6 +288,10 @@ static void win_layout_apply(struct win_layout *l, int *order, int order_count) 
 		}
 
 		if (!win_rect_equals(w->chars_bounds, old_chars_bounds) || w->visible != old_visible) {
+			win_rect_include_rect(&l->dirty, old_win_bounds);
+			if (w->visible)
+				win_rect_include_rect(&l->dirty, w->win_bounds);
+
 			if (w->handler)
 				w->handler(
 				    l,
@@ -294,10 +300,6 @@ static void win_layout_apply(struct win_layout *l, int *order, int order_count) 
 				    win_rect_height(w->chars_bounds),
 				    w->visible,
 				    w->userdata);
-
-			win_rect_include_rect(&l->dirty, old_win_bounds);
-			if (w->visible)
-				win_rect_include_rect(&l->dirty, w->win_bounds);
 		}
 	}
 }
@@ -389,7 +391,7 @@ static int win_layout_new_edge(struct win_layout *l, enum win_mode mode, win_lay
 	w->z_index = z_index;
 	w->edge = edge;
 
-	/* this does not mean we square, but width is ignored if edge=TOP/BOTTOM and vice versa */
+	/* this does not mean we square, but width is ignored if edge=TOP/BOTTOM and same for height */
 	w->width = size;
 	w->height = size;
 
