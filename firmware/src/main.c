@@ -1,5 +1,7 @@
 #include "net/connection.h"
 #include "net/network.h"
+#include "window/chars.h"
+#include "window/layout.h"
 #include "zephyr/sys/util.h"
 
 #include <errno.h>
@@ -33,6 +35,9 @@ static struct tsm_screen screen;
 static struct tsm_vte vte;
 static struct termlet_connection connection;
 static struct termlet_network network;
+
+static struct win_layout layout = { 0 };
+static int terminal_window = 0;
 
 static uint16_t framebuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT];
 
@@ -116,30 +121,19 @@ static int draw_cb(struct tsm_screen *screen,
                    const struct tsm_screen_attr *attr,
                    tsm_age_t age,
                    void *data) {
-	struct renderer *renderer = data;
-	const struct font *font = renderer->font;
-	unsigned int x = posx * font->width;
-	unsigned int y = posy * font->height;
 
-	ARG_UNUSED(screen);
-	ARG_UNUSED(id);
-	ARG_UNUSED(width);
-	ARG_UNUSED(age);
-	ARG_UNUSED(len);
-
-	if (x >= renderer->width || y >= renderer->height)
-		return 0;
-
-	uint16_t fg = rgb888_to_rgb565(attr->fr, attr->fg, attr->fb);
-	uint16_t bg = rgb888_to_rgb565(attr->br, attr->bg, attr->bb);
+	struct win_char c;
+	c.code = ch[0];
+	c.fg = rgb888_to_rgb565(attr->fr, attr->fg, attr->fb);
+	c.bg = rgb888_to_rgb565(attr->br, attr->bg, attr->bb);
 
 	if (attr->inverse) {
-		uint16_t tmp = fg;
-		fg = bg;
-		bg = tmp;
+		uint16_t tmp = c.fg;
+		c.fg = c.bg;
+		c.bg = tmp;
 	}
 
-	draw_glyph(renderer, ch[0], x, y, fg, bg);
+	win_layout_put(&layout, terminal_window, posx, posy, c);
 	return 0;
 }
 
@@ -156,24 +150,6 @@ static void vte_write_cb(struct tsm_vte *vte,
 	ret = termlet_connection_write(connection, u8, len);
 	if (ret < 0 && ret != -ENOTCONN)
 		LOG_WRN("TCP write failed: %d", ret);
-}
-
-static int render_screen(struct renderer *renderer) {
-	struct display_buffer_descriptor desc = {
-		.buf_size = renderer->pitch * renderer->height * sizeof(uint16_t),
-		.width = renderer->width,
-		.height = renderer->height,
-		.pitch = renderer->pitch,
-		.frame_incomplete = false,
-	};
-
-	tsm_screen_draw(&screen, draw_cb, renderer);
-
-	return display_write(renderer->display,
-	                     0,
-	                     0,
-	                     &desc,
-	                     renderer->buffer);
 }
 
 keymap_state_t keymap_state;
@@ -319,6 +295,7 @@ static void send_naws(struct termlet_state *state) {
 	telnet_send_subnegotiation_end(state->telnet,
 	                               TELNET_OPT_NAWS);
 }
+
 static void handle_transition(
     struct termlet_state *state,
     const struct telnet_negotiation_transition *trns) {
@@ -409,9 +386,8 @@ void handle_telnet(struct telnet *telnet, const union telnet_event *ev, void *us
 		case TELNET_EV_DATA:
 			tsm_vte_input(&vte, ev->data.buffer, ev->data.size);
 
-			ret = render_screen(&renderer);
-			if (ret < 0)
-				LOG_INF("display_write failed: %d", ret);
+			tsm_screen_draw(&screen, draw_cb, NULL);
+			win_layout_render(&layout);
 			break;
 
 		case TELNET_EV_SEND:
@@ -436,6 +412,73 @@ void handle_telnet(struct telnet *telnet, const union telnet_event *ev, void *us
 			LOG_WRN("unhandled command from telnet: %d", ev->command.code);
 			break;
 	}
+}
+
+void draw_char(uint16_t posx, uint16_t posy,
+               struct win_char ch, void *userdata) {
+	struct renderer *renderer = userdata;
+	const struct font *font = renderer->font;
+
+	unsigned int x = posx * font->width;
+	unsigned int y = posy * font->height;
+
+	if (x >= renderer->width || y >= renderer->height)
+		return;
+
+	draw_glyph(renderer, ch.code, x, y, ch.fg, ch.bg);
+}
+
+static void commit(void *userdata) {
+	struct renderer *r = userdata;
+
+	struct display_buffer_descriptor desc = {
+		.buf_size = r->pitch * r->height * sizeof(uint16_t),
+		.width = r->width,
+		.height = r->height,
+		.pitch = r->pitch,
+		.frame_incomplete = false,
+	};
+
+	int ret = display_write(r->display, 0, 0, &desc, r->buffer);
+	if (ret < 0)
+		LOG_ERR("display_write failed: %d", ret);
+}
+
+static void resize_handler(struct win_layout *layout, int win,
+                           uint16_t cols, uint16_t rows,
+                           bool visible, void *userdata) {
+	ARG_UNUSED(layout);
+	ARG_UNUSED(win);
+
+	struct termlet_state *state = userdata;
+	;
+
+
+	if (!visible)
+		return;
+
+	if (tsm_screen_get_width(&screen) == cols &&
+	    tsm_screen_get_height(&screen) == rows)
+		return;
+
+	int ret = tsm_screen_resize(&screen, cols, rows);
+	if (ret < 0) {
+		LOG_ERR("tsm_screen_resize failed: %d", ret);
+		return;
+	}
+
+	renderer.columns = cols;
+	renderer.rows = rows;
+
+	send_naws(state);
+
+	LOG_INF("resized to %dx%d", cols, rows);
+}
+
+static void status_resize_handler(struct win_layout *layout, int win,
+                                  uint16_t cols, uint16_t rows,
+                                  bool visible, void *userdata) {
+	LOG_INF("status: %d %d %d", visible, cols, rows);
 }
 
 int main(void) {
@@ -484,23 +527,26 @@ int main(void) {
 
 	renderer.columns = cap.x_resolution / renderer.font->width;
 	renderer.rows = cap.y_resolution / renderer.font->height;
+
+	layout.bounds = (struct win_rect){
+		.x0 = 0,
+		.y0 = 0,
+		.x1 = renderer.columns,
+		.y1 = renderer.rows,
+	};
+	layout.draw_char = draw_char;
+	layout.commit = commit;
+	layout.userdata = &renderer;
+
 	LOG_INF("Terminal: %ux%u", renderer.columns, renderer.rows);
+
+	struct termlet_state state = { 0 };
 
 	ret = tsm_screen_new(&screen);
 	if (ret < 0) {
 		LOG_INF("tsm_screen_new failed: %d", ret);
 		return 0;
 	}
-
-	ret = tsm_screen_resize(&screen, renderer.columns, renderer.rows);
-	if (ret < 0) {
-		LOG_INF("tsm_screen_resize failed: %d", ret);
-		return 0;
-	}
-
-	LOG_INF("terminal resized to %dx%d",
-	        tsm_screen_get_width(&screen),
-	        tsm_screen_get_height(&screen));
 
 	/*
 	 * De TCP-laag wordt eerst geïnitialiseerd zodat network.c vanaf het
@@ -518,9 +564,21 @@ int main(void) {
 		return 0;
 	}
 
-	struct termlet_state state = { 0 };
 	state.telnet = &telnet;
 	telnet_init(&telnet, handle_telnet, &state);
+
+	int status_window = win_layout_new_clip(&layout, status_resize_handler, NULL, 0, WIN_EDGE_BOTTOM, 1);
+	win_layout_enable(&layout, status_window, true);
+
+	struct win_char ch = {
+		.code = '@',
+		.fg = 0x1234,
+		.bg = 0xfedc,
+	};
+	win_layout_put(&layout, status_window, 0, 0, ch);
+
+	terminal_window = win_layout_new_main(&layout, resize_handler, &state, 0);
+	win_layout_enable(&layout, terminal_window, true);
 
 	ret = tsm_vte_new(&vte, &screen, vte_write_cb, &connection);
 	if (ret < 0) {
@@ -538,12 +596,8 @@ int main(void) {
 
 	memset(framebuffer, 0, sizeof(framebuffer));
 
-	ret = render_screen(&renderer);
-	if (ret < 0) {
-		LOG_INF("Initial display_write failed: %d", ret);
-		termlet_connection_deinit(&connection);
-		return 0;
-	}
+	tsm_screen_draw(&screen, draw_cb, NULL);
+	win_layout_render(&layout);
 
 	LOG_INF("Termlet initialized; waiting for IPv4 connectivity");
 

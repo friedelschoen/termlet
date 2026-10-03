@@ -1,0 +1,497 @@
+#include <assert.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <window/geom.h>
+#include <window/layout.h>
+#include <zephyr/sys/util.h>
+
+static int win_alloc(struct win_layout *l) {
+	for (int i = 0; i < (int) ARRAY_SIZE(l->windows); i++) {
+		if (!l->windows[i].used) {
+			memset(&l->windows[i], 0, sizeof(*l->windows));
+			l->windows[i].used = true;
+			return i;
+		}
+	}
+	return -ENOSPC;
+}
+
+static int win_layout_layer(const struct win_state *w) {
+	switch (w->mode) {
+		case WIN_MODE_CLIP:
+		case WIN_MODE_OVERLAY:
+			return 0;
+
+		case WIN_MODE_MAIN:
+			return 1;
+
+		case WIN_MODE_DIALOG:
+			return 2;
+	}
+
+	return 0;
+}
+
+static bool win_layout_ordered(const struct win_state *prev, const struct win_state *cur) {
+	int prev_layer = win_layout_layer(prev);
+	int cur_layer = win_layout_layer(cur);
+
+	if (prev_layer != cur_layer)
+		return prev_layer < cur_layer;
+
+	/*
+	 * Lower z-index has higher layout priority and therefore
+	 * comes first.
+	 */
+	if (prev->z_index != cur->z_index)
+		return prev->z_index < cur->z_index;
+
+	if ((prev->mode == WIN_MODE_CLIP ||
+	     prev->mode == WIN_MODE_OVERLAY) &&
+	    prev->edge != cur->edge)
+		return prev->edge < cur->edge;
+
+	return true; /* stable */
+}
+
+static bool win_draw_ordered(const struct win_state *prev, const struct win_state *cur) {
+	if (prev->mode != cur->mode)
+		return prev->mode < cur->mode;
+
+	if (prev->z_index != cur->z_index)
+		return prev->z_index > cur->z_index;
+
+	if ((prev->mode == WIN_MODE_CLIP ||
+	     prev->mode == WIN_MODE_OVERLAY) &&
+	    prev->edge != cur->edge)
+		return prev->edge < cur->edge;
+
+	return true;
+}
+
+static struct win_char *win_chars_resize(struct win_char *chars, struct win_rect from, struct win_rect to) {
+	struct win_char *new;
+
+	if (win_rect_equals(from, to))
+		return chars;
+
+	new = calloc(win_rect_width(to) * win_rect_height(to),
+	             sizeof(*new));
+	assert(new);
+
+	uint16_t w = MIN(win_rect_width(from), win_rect_width(to));
+	uint16_t h = MIN(win_rect_height(from), win_rect_height(to));
+	for (uint16_t x = 0; x < w; x++)
+		for (uint16_t y = 0; y < h; y++)
+			*win_chars_get(new, to, x, y) = *win_chars_get(chars, from, x, y);
+
+	free(chars);
+	return new;
+}
+
+static void win_layout_apply(struct win_layout *l, int *order, int order_count) {
+	struct win_rect a = l->bounds;
+	uint16_t edge_shadow[4] = { 0 };
+	bool main_done = false;
+
+	for (int win = 0; win < order_count; win++) {
+		struct win_state *w = &l->windows[order[win]];
+
+		struct win_rect old_chars_bounds = w->chars_bounds;
+		struct win_rect old_win_bounds = w->win_bounds;
+		bool old_visible = w->visible;
+
+		/* reset state */
+		w->visible = false;
+
+		switch (w->mode) {
+			case WIN_MODE_MAIN:
+				if (main_done || win_rect_empty(a))
+					break;
+
+				w->win_bounds = a;
+				w->chars_bounds = a;
+				w->visible = true;
+				main_done = true;
+				break;
+
+			case WIN_MODE_DIALOG: {
+				if (w->width + 2 > win_rect_width(l->bounds) ||
+				    w->height + 2 > win_rect_height(l->bounds))
+					break;
+
+				uint16_t x = l->bounds.x0 +
+				             (win_rect_width(l->bounds) - w->width) / 2;
+				uint16_t y = l->bounds.y0 +
+				             (win_rect_height(l->bounds) - w->height) / 2;
+
+				w->chars_bounds = (struct win_rect){
+					.x0 = x,
+					.y0 = y,
+					.x1 = x + w->width,
+					.y1 = y + w->height,
+				};
+
+				w->win_bounds = (struct win_rect){
+					.x0 = x - 1,
+					.y0 = y - 1,
+					.x1 = x + w->width + 1,
+					.y1 = y + w->height + 1,
+				};
+
+				bool covered = false;
+
+				for (int j = 0; j < win; j++) {
+					struct win_state *other = &l->windows[order[j]];
+
+					if (other->mode != WIN_MODE_DIALOG ||
+					    !other->visible)
+						continue;
+
+					if (win_rect_contains_rect(other->win_bounds,
+					                           w->win_bounds)) {
+						covered = true;
+						break;
+					}
+				}
+
+				if (!covered)
+					w->visible = true;
+
+				break;
+			}
+
+			case WIN_MODE_CLIP:
+			case WIN_MODE_OVERLAY: {
+				if (win_rect_empty(a))
+					break;
+
+				uint16_t size;
+				bool placed = false;
+
+				switch (w->edge) {
+					case WIN_EDGE_TOP:
+					case WIN_EDGE_BOTTOM:
+						size = w->height;
+
+						if (win_rect_height(a) < size + 1)
+							break;
+
+						w->win_bounds.x0 = a.x0;
+						w->chars_bounds.x0 = a.x0;
+						w->win_bounds.x1 = a.x1;
+						w->chars_bounds.x1 = a.x1;
+
+						if (w->edge == WIN_EDGE_TOP) {
+							w->win_bounds.y0 = a.y0;
+							w->chars_bounds.y0 = a.y0;
+							w->win_bounds.y1 = a.y0 + size + 1;
+							w->chars_bounds.y1 = a.y0 + size;
+						} else {
+							w->win_bounds.y0 = a.y1 - size - 1;
+							w->chars_bounds.y0 = a.y1 - size;
+							w->win_bounds.y1 = a.y1;
+							w->chars_bounds.y1 = a.y1;
+						}
+						placed = true;
+						break;
+
+					case WIN_EDGE_LEFT:
+					case WIN_EDGE_RIGHT:
+						size = w->width;
+
+						if (win_rect_width(a) < size)
+							break;
+
+						w->win_bounds.y0 = a.y0;
+						w->chars_bounds.y0 = a.y0;
+						w->win_bounds.y1 = a.y1;
+						w->chars_bounds.y1 = a.y1;
+
+						if (w->edge == WIN_EDGE_LEFT) {
+							w->win_bounds.x0 = a.x0;
+							w->chars_bounds.x0 = a.x0;
+							w->win_bounds.x1 = a.x0 + size + 1;
+							w->chars_bounds.x1 = a.x0 + size;
+						} else {
+							w->win_bounds.x0 = a.x1 - size - 1;
+							w->chars_bounds.x0 = a.x1 - size;
+							w->win_bounds.x1 = a.x1;
+							w->chars_bounds.x1 = a.x1;
+						}
+						placed = true;
+						break;
+				}
+
+				if (!placed)
+					break;
+
+				if (w->mode == WIN_MODE_OVERLAY) {
+					/*
+					 * Overlays don't consume available space. Multiple
+					 * overlays on the same edge overlap from the same
+					 * origin, so their shadow is the maximum size rather
+					 * than the sum.
+					 */
+					edge_shadow[w->edge] =
+					    MAX(edge_shadow[w->edge], size + 1);
+
+					w->visible = true;
+					break;
+				}
+
+				/*
+				 * A clip still consumes layout space even when it is
+				 * completely hidden behind an overlay.
+				 */
+				w->visible = edge_shadow[w->edge] < size + 1;
+
+				switch (w->edge) {
+					case WIN_EDGE_TOP:
+						a.y0 += size + 1;
+						break;
+
+					case WIN_EDGE_BOTTOM:
+						a.y1 -= size + 1;
+						break;
+
+					case WIN_EDGE_LEFT:
+						a.x0 += size + 1;
+						break;
+
+					case WIN_EDGE_RIGHT:
+						a.x1 -= size + 1;
+						break;
+				}
+
+				/*
+				 * Moving the available edge through this clip also moves
+				 * past the corresponding part of the overlay shadow.
+				 */
+				if (edge_shadow[w->edge] > size + 1)
+					edge_shadow[w->edge] -= size + 1;
+				else
+					edge_shadow[w->edge] = 0;
+
+				break;
+			}
+		}
+
+		if (w->chars) {
+			w->chars = win_chars_resize(w->chars, old_chars_bounds, w->chars_bounds);
+		} else {
+			w->chars = calloc(win_rect_width(w->chars_bounds) * win_rect_height(w->chars_bounds),
+			                  sizeof(*w->chars));
+			assert(w->chars);
+		}
+
+		if (!win_rect_equals(w->chars_bounds, old_chars_bounds) || w->visible != old_visible) {
+			if (w->handler)
+				w->handler(
+				    l,
+				    order[win],
+				    win_rect_width(w->chars_bounds),
+				    win_rect_height(w->chars_bounds),
+				    w->visible,
+				    w->userdata);
+
+			win_rect_include_rect(&l->dirty, old_win_bounds);
+			if (w->visible)
+				win_rect_include_rect(&l->dirty, w->win_bounds);
+		}
+	}
+}
+
+/** Compares cur with previous. @returns whether @p cur should be placed after @p prev. */
+typedef bool (*win_comparator_t)(const struct win_state *prev, const struct win_state *cur);
+
+static int win_sort(struct win_layout *l, int *order, int check_visible, win_comparator_t compare) {
+	int order_count = 0;
+
+	for (int i = 0; i < (int) ARRAY_SIZE(l->windows); i++) {
+		struct win_state *w = &l->windows[i];
+
+		if ((check_visible && !w->visible) || !w->used || !w->enabled)
+			continue;
+
+		int j = order_count;
+
+		while (j > 0) {
+			int prev = order[j - 1];
+
+			if (compare(&l->windows[prev], w))
+				break;
+
+			order[j] = prev;
+			j--;
+		}
+
+		order[j] = i;
+		order_count++;
+	}
+	return order_count;
+}
+
+void win_layout_update(struct win_layout *l) {
+	int order[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
+	int order_count;
+
+	order_count = win_sort(l, order, false, win_layout_ordered);
+
+	win_layout_apply(l, order, order_count);
+
+	l->draw_count = win_sort(l, l->draw_order, true, win_draw_ordered);
+}
+
+int win_layout_new_main(struct win_layout *l, win_layout_handler_t fn, void *userdata, uint8_t z_index) {
+	int handle = win_alloc(l);
+	if (handle < 0)
+		return handle;
+
+	struct win_state *w = &l->windows[handle];
+	w->mode = WIN_MODE_MAIN;
+	w->handler = fn;
+	w->userdata = userdata;
+	w->z_index = z_index;
+
+	win_layout_update(l);
+
+	return handle;
+}
+
+int win_layout_new_dialog(struct win_layout *l, win_layout_handler_t fn, void *userdata, uint8_t z_index, int width, int height) {
+	int handle = win_alloc(l);
+	if (handle < 0)
+		return handle;
+
+	struct win_state *w = &l->windows[handle];
+	w->mode = WIN_MODE_DIALOG;
+	w->handler = fn;
+	w->userdata = userdata;
+	w->z_index = z_index;
+	w->width = width;
+	w->height = height;
+
+	win_layout_update(l);
+
+	return handle;
+}
+
+static int win_layout_new_edge(struct win_layout *l, enum win_mode mode, win_layout_handler_t fn, void *userdata, uint8_t z_index, enum win_edge edge, int size) {
+	int handle = win_alloc(l);
+	if (handle < 0)
+		return handle;
+
+	struct win_state *w = &l->windows[handle];
+	w->mode = mode;
+	w->handler = fn;
+	w->userdata = userdata;
+	w->z_index = z_index;
+	w->edge = edge;
+
+	/* this does not mean we square, but width is ignored if edge=TOP/BOTTOM and vice versa */
+	w->width = size;
+	w->height = size;
+
+	win_layout_update(l);
+
+	return handle;
+}
+
+int win_layout_new_clip(struct win_layout *l, win_layout_handler_t fn, void *userdata, uint8_t z_index, enum win_edge edge, int size) {
+	return win_layout_new_edge(l, WIN_MODE_CLIP, fn, userdata, z_index, edge, size);
+}
+
+int win_layout_new_overlay(struct win_layout *l, win_layout_handler_t fn, void *userdata, uint8_t z_index, enum win_edge edge, int size) {
+	return win_layout_new_edge(l, WIN_MODE_OVERLAY, fn, userdata, z_index, edge, size);
+}
+
+void win_layout_dealloc(struct win_layout *l, int win) {
+	l->windows[win].used = false;
+
+	if (l->windows[win].chars)
+		free(l->windows[win].chars);
+
+	win_layout_update(l);
+}
+
+void win_layout_set_handler(struct win_layout *l, int win, win_layout_handler_t fn, void *userdata) {
+	l->windows[win].handler = fn;
+	l->windows[win].userdata = userdata;
+}
+
+void win_layout_enable(struct win_layout *l, int win, bool enabled) {
+	if (l->windows[win].enabled == enabled)
+		return;
+
+	l->windows[win].enabled = enabled;
+
+	win_layout_update(l);
+}
+
+void win_layout_resize(struct win_layout *l, int win, int width, int height) {
+	struct win_state *w = &l->windows[win];
+
+	if (w->width == width && w->height == height)
+		return;
+
+	w->width = width;
+	w->height = height;
+
+	win_layout_update(l);
+}
+
+void win_layout_put(struct win_layout *l, int win, int x, int y, struct win_char ch) {
+	struct win_state *w = &l->windows[win];
+
+	struct win_char *dest = win_chars_get(w->chars, w->chars_bounds, x, y);
+	if (dest->code == ch.code && dest->fg == ch.fg && dest->bg == ch.bg)
+		return;
+
+	*dest = ch;
+	win_rect_include_point(&l->dirty, w->chars_bounds.x0 + x, w->chars_bounds.y0 + y);
+}
+
+static void win_render_window(struct win_layout *l, int win, struct win_rect area) {
+	struct win_state *w = &l->windows[win];
+
+	area = win_rect_intersection(area, w->win_bounds);
+
+	for (uint16_t y = area.y0; y < area.y1; y++) {
+		for (uint16_t x = area.x0; x < area.x1; x++) {
+			if (win_rect_contains_point(w->chars_bounds, x, y)) {
+				struct win_char *c =
+				    win_chars_get(w->chars, w->chars_bounds,
+				                  x - w->chars_bounds.x0,
+				                  y - w->chars_bounds.y0);
+
+				l->draw_char(x, y, *c, l->userdata);
+			} else {
+				struct win_char ch = {
+					.code = ' ',
+					.fg = 0x0000,
+					.bg = 0xffff,
+				};
+				l->draw_char(x, y, ch, l->userdata);
+			}
+		}
+	}
+}
+
+void win_layout_render(struct win_layout *l) {
+	if (!l->draw_char)
+		return;
+
+	for (int i = 0; i < l->draw_count; i++) {
+		struct win_state *w = &l->windows[l->draw_order[i]];
+
+		if (win_rect_intersects(w->win_bounds, l->dirty)) {
+			win_render_window(l, l->draw_order[i], l->dirty);
+		}
+	}
+
+	if (l->commit)
+		l->commit(l->userdata);
+
+	l->dirty = (struct win_rect){ 0 };
+}
