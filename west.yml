@@ -1,0 +1,34 @@
+# Copyright (c) 2021 Nordic Semiconductor ASA
+# SPDX-License-Identifier: Apache-2.0
+
+manifest:
+  self:
+    west-commands: scripts/west-commands.yml
+
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+    - name: golang
+      url-base: https://github.com/golang
+    
+    - name: friedelschoen
+      url-base: https://github.com/friedelschoen
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.4.2
+      import:
+        name-allowlist:
+          - net-tools
+
+    - name: go-fonts
+      url: https://github.com/golang/image
+      revision: v0.45.0
+      path: modules/fonts/go
+
+    - name: minitelnet
+      remote: friedelschoen
+      revision: main
+      path: modules/lib/minitelnet

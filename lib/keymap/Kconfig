@@ -1,0 +1,17 @@
+config KEYMAP
+    bool "keymap library"
+
+if KEYMAP
+config KEYMAP_KEYBOARD_LOCALE
+    string "keymap locale"
+    default "en_US.UTF-8"
+
+config KEYMAP_KEYBOARD_LAYOUT
+    string "keymap layout"
+    default "us"
+
+config KEYMAP_KEYBOARD_VARIANT
+    string "keymap variant"
+    default "intl"
+
+endif

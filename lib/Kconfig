@@ -1,0 +1,12 @@
+# Copyright (c) 2021 Legrand North America, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
+menu "Custom libraries"
+
+rsource "fonts/Kconfig"
+rsource "libtsm/Kconfig"
+rsource "wcwidth/Kconfig"
+rsource "keymap/Kconfig"
+rsource "libutf8/Kconfig"
+
+endmenu

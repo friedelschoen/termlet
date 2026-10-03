@@ -1,0 +1,2 @@
+config WCWIDTH
+    bool "enable wcwidth-library"

@@ -1,0 +1,14 @@
+/ {
+    keyboard {
+        compatible = "zephyr,native-linux-evdev";
+    };
+};
+
+&sdl_dc {
+    width = <1024>;
+    height = <600>;
+};
+
+&uart1 {
+    status = "okay";
+};

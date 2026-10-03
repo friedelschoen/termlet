@@ -1,0 +1,19 @@
+config LIBTSM
+    bool "Enable libtsm"
+    depends on WCWIDTH
+
+if LIBTSM
+
+config LIBTSM_MAX_HEIGHT
+    int "maximum of terminal height"
+    default 40
+
+config LIBTSM_MAX_WIDTH
+    int "maximum of terminal width"
+    default 140
+
+module = LIBTSM
+module-str = Terminal-emulator State Machine
+source "subsys/logging/Kconfig.template.log_config"
+
+endif

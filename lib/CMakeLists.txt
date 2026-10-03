@@ -1,0 +1,5 @@
+add_subdirectory_ifdef(CONFIG_FONTS fonts)
+add_subdirectory_ifdef(CONFIG_LIBTSM libtsm)
+add_subdirectory_ifdef(CONFIG_WCWIDTH wcwidth)
+add_subdirectory_ifdef(CONFIG_KEYMAP keymap)
+add_subdirectory_ifdef(CONFIG_LIBUTF8 libutf8)
