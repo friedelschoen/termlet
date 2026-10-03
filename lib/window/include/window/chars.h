@@ -11,6 +11,9 @@ struct win_char {
 };
 
 static inline struct win_char *win_chars_get(struct win_char *chars, struct win_rect bounds, int x, int y) {
+	if (chars == NULL)
+		return NULL;
+
 	int stride = win_rect_width(bounds);
 	return &chars[y * stride + x];
 }
