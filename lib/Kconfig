@@ -8,5 +8,6 @@ rsource "libtsm/Kconfig"
 rsource "wcwidth/Kconfig"
 rsource "keymap/Kconfig"
 rsource "libutf8/Kconfig"
+rsource "window/Kconfig"
 
 endmenu

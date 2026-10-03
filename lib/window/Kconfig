@@ -1,0 +1,10 @@
+config WINDOW
+  bool "enable windowing lib"
+
+if WINDOW
+
+config WINDOW_LAYOUT_MAX_WINDOWS
+  int "maximal allocatable windows"
+  default 16
+
+endif
