@@ -4,3 +4,6 @@ add_subdirectory_ifdef(CONFIG_WCWIDTH wcwidth)
 add_subdirectory_ifdef(CONFIG_KEYMAP keymap)
 add_subdirectory_ifdef(CONFIG_LIBUTF8 libutf8)
 add_subdirectory_ifdef(CONFIG_WINDOW window)
+add_subdirectory_ifdef(CONFIG_LUA lua)
+
+add_subdirectory(fs)

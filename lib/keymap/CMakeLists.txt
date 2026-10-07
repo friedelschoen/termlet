@@ -1,38 +1,47 @@
 cmake_minimum_required(VERSION 3.20)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
+include(ExternalProject)
+
+set(KEYMAP_HOST_BUILD_DIR
+    ${CMAKE_CURRENT_BINARY_DIR}/genkeymap-build
+)
 
 set(KEYMAP_GENERATOR
-    ${CMAKE_CURRENT_BINARY_DIR}/genkeymap-compile
+    ${KEYMAP_HOST_BUILD_DIR}/genkeymap-compile
 )
 
 set(KEYMAP_SOURCE
     ${CMAKE_CURRENT_BINARY_DIR}/generated_keymap.c
 )
 
-#
-# Host-side generator
-#
-add_executable(genkeymap-compile
-    compiler/compile.c
-    compiler/utf8_map.c
-    compiler/compose_tree.c
+find_program(HOST_CC NAMES cc gcc clang REQUIRED)
+
+ExternalProject_Add(genkeymap-host
+    SOURCE_DIR
+        ${CMAKE_CURRENT_SOURCE_DIR}/compiler
+
+    BINARY_DIR
+        ${KEYMAP_HOST_BUILD_DIR}
+
+    CMAKE_ARGS
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_C_COMPILER=${HOST_CC}
+
+    INSTALL_COMMAND ""
+
+    BUILD_BYPRODUCTS
+        ${KEYMAP_GENERATOR}
 )
 
-target_link_libraries(genkeymap-compile PRIVATE
-    PkgConfig::XKBCOMMON
-)
-
 #
-# Generate the embedded keymap source.
+# Generate target-side keymap source
 #
 add_custom_command(
     OUTPUT
         ${KEYMAP_SOURCE}
 
     COMMAND
-        $<TARGET_FILE:genkeymap-compile>
+        ${KEYMAP_GENERATOR}
         --rules evdev
         --model pc105
         --layout ${CONFIG_KEYMAP_KEYBOARD_LAYOUT}
@@ -43,8 +52,8 @@ add_custom_command(
         > ${KEYMAP_SOURCE}
 
     DEPENDS
-        genkeymap-compile
-     
+        genkeymap-host
+
     VERBATIM
 )
 

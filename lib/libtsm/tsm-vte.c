@@ -54,7 +54,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <xkbcommon/xkbcommon-keysyms.h>
+#include <xkbcommon-keysyms.h>
 LOG_MODULE_DECLARE(libtsm);
 
 #define LLOG_SUBSYSTEM "tsm-vte"
