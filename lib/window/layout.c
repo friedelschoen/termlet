@@ -1,6 +1,4 @@
 #include <assert.h>
-#include <errno.h>
-#include <stdlib.h>
 #include <window/geom.h>
 #include <window/layout.h>
 #include <zephyr/sys/util.h>
@@ -13,7 +11,7 @@ static int win_alloc(struct win_layout *l) {
 			return i;
 		}
 	}
-	return -ENOSPC;
+	return -1;
 }
 
 static int win_layout_layer(const struct win_state *w) {
@@ -69,31 +67,11 @@ static bool win_draw_ordered(const struct win_state *prev, const struct win_stat
 	return true;
 }
 
-static struct win_char *win_chars_resize(struct win_char *chars, struct win_rect from, struct win_rect to) {
-	struct win_char *new;
-
-	if (win_rect_equals(from, to))
-		return chars;
-
-	new = calloc(win_rect_width(to) * win_rect_height(to),
-	             sizeof(*new));
-	assert(new);
-
-	uint16_t w = MIN(win_rect_width(from), win_rect_width(to));
-	uint16_t h = MIN(win_rect_height(from), win_rect_height(to));
-	for (uint16_t x = 0; x < w; x++)
-		for (uint16_t y = 0; y < h; y++)
-			*win_chars_get(new, to, x, y) = *win_chars_get(chars, from, x, y);
-
-	free(chars);
-	return new;
-}
-
 static void win_layout_apply_bounds_edge(struct win_state *w, struct win_rect *a, uint16_t *edge_shadow) {
 	if (win_rect_empty(*a))
 		return;
 
-	uint16_t size;
+	uint16_t size = 0;
 
 	switch (w->edge) {
 		case WIN_EDGE_TOP:
@@ -279,21 +257,13 @@ static void win_layout_apply(struct win_layout *l, int *order, int order_count) 
 
 		win_layout_apply_bounds(l, order, win, &a, &main_done, edge_shadow);
 
-		if (w->chars) {
-			w->chars = win_chars_resize(w->chars, old_chars_bounds, w->chars_bounds);
-		} else {
-			w->chars = calloc(win_rect_width(w->chars_bounds) * win_rect_height(w->chars_bounds),
-			                  sizeof(*w->chars));
-			assert(w->chars);
-		}
-
 		if (!win_rect_equals(w->chars_bounds, old_chars_bounds) || w->visible != old_visible) {
 			win_rect_include_rect(&l->dirty, old_win_bounds);
 			if (w->visible)
 				win_rect_include_rect(&l->dirty, w->win_bounds);
 
-			if (w->handler)
-				w->handler(
+			if (w->layout)
+				w->layout(
 				    l,
 				    order[win],
 				    win_rect_width(w->chars_bounds),
@@ -345,15 +315,13 @@ void win_layout_update(struct win_layout *l) {
 	l->draw_count = win_sort(l, l->draw_order, true, win_draw_ordered);
 }
 
-int win_layout_new_main(struct win_layout *l, win_layout_handler_t fn, void *userdata, uint8_t z_index) {
+int win_layout_new_main(struct win_layout *l, uint8_t z_index) {
 	int handle = win_alloc(l);
 	if (handle < 0)
 		return handle;
 
 	struct win_state *w = &l->windows[handle];
 	w->mode = WIN_MODE_MAIN;
-	w->handler = fn;
-	w->userdata = userdata;
 	w->z_index = z_index;
 
 	win_layout_update(l);
@@ -361,15 +329,13 @@ int win_layout_new_main(struct win_layout *l, win_layout_handler_t fn, void *use
 	return handle;
 }
 
-int win_layout_new_dialog(struct win_layout *l, win_layout_handler_t fn, void *userdata, uint8_t z_index, int width, int height) {
+int win_layout_new_dialog(struct win_layout *l, uint8_t z_index, int width, int height) {
 	int handle = win_alloc(l);
 	if (handle < 0)
 		return handle;
 
 	struct win_state *w = &l->windows[handle];
 	w->mode = WIN_MODE_DIALOG;
-	w->handler = fn;
-	w->userdata = userdata;
 	w->z_index = z_index;
 	w->width = width;
 	w->height = height;
@@ -379,15 +345,13 @@ int win_layout_new_dialog(struct win_layout *l, win_layout_handler_t fn, void *u
 	return handle;
 }
 
-static int win_layout_new_edge(struct win_layout *l, enum win_mode mode, win_layout_handler_t fn, void *userdata, uint8_t z_index, enum win_edge edge, int size) {
+static int win_layout_new_edge(struct win_layout *l, enum win_mode mode, uint8_t z_index, enum win_edge edge, int size) {
 	int handle = win_alloc(l);
 	if (handle < 0)
 		return handle;
 
 	struct win_state *w = &l->windows[handle];
 	w->mode = mode;
-	w->handler = fn;
-	w->userdata = userdata;
 	w->z_index = z_index;
 	w->edge = edge;
 
@@ -400,25 +364,27 @@ static int win_layout_new_edge(struct win_layout *l, enum win_mode mode, win_lay
 	return handle;
 }
 
-int win_layout_new_clip(struct win_layout *l, win_layout_handler_t fn, void *userdata, uint8_t z_index, enum win_edge edge, int size) {
-	return win_layout_new_edge(l, WIN_MODE_CLIP, fn, userdata, z_index, edge, size);
+int win_layout_new_clip(struct win_layout *l, uint8_t z_index, enum win_edge edge, int size) {
+	return win_layout_new_edge(l, WIN_MODE_CLIP, z_index, edge, size);
 }
 
-int win_layout_new_overlay(struct win_layout *l, win_layout_handler_t fn, void *userdata, uint8_t z_index, enum win_edge edge, int size) {
-	return win_layout_new_edge(l, WIN_MODE_OVERLAY, fn, userdata, z_index, edge, size);
+int win_layout_new_overlay(struct win_layout *l, uint8_t z_index, enum win_edge edge, int size) {
+	return win_layout_new_edge(l, WIN_MODE_OVERLAY, z_index, edge, size);
 }
 
 void win_layout_dealloc(struct win_layout *l, int win) {
-	l->windows[win].used = false;
+	struct win_state *w = &l->windows[win];
 
-	if (l->windows[win].chars)
-		free(l->windows[win].chars);
+	if (w->used && w->visible)
+		win_rect_include_rect(&l->dirty, w->win_bounds);
 
+	w->used = false;
 	win_layout_update(l);
 }
 
-void win_layout_set_handler(struct win_layout *l, int win, win_layout_handler_t fn, void *userdata) {
-	l->windows[win].handler = fn;
+void win_layout_set_handler(struct win_layout *l, int win, win_render_handler_t render, win_layout_handler_t layout, void *userdata) {
+	l->windows[win].render = render;
+	l->windows[win].layout = layout;
 	l->windows[win].userdata = userdata;
 }
 
@@ -443,36 +409,34 @@ void win_layout_resize(struct win_layout *l, int win, int width, int height) {
 	win_layout_update(l);
 }
 
-void win_layout_put(struct win_layout *l, int win, int x, int y, struct win_char ch) {
+void win_layout_draw_char(struct win_layout *l, int win, int x, int y, struct win_char ch) {
 	struct win_state *w = &l->windows[win];
 
-	struct win_char *dest = win_chars_get(w->chars, w->chars_bounds, x, y);
-	if (dest->code == ch.code && dest->fg == ch.fg && dest->bg == ch.bg)
+	if (!l->draw_char ||
+	    x < 0 || y < 0 ||
+	    x >= win_rect_width(w->chars_bounds) ||
+	    y >= win_rect_height(w->chars_bounds))
 		return;
 
-	*dest = ch;
-	win_rect_include_point(&l->dirty, w->chars_bounds.x0 + x, w->chars_bounds.y0 + y);
+	x += w->chars_bounds.x0;
+	y += w->chars_bounds.y0;
+
+	l->draw_char(x, y, ch, l->userdata);
 }
 
-static void win_render_window(struct win_layout *l, int win, struct win_rect area) {
+static void win_render_window_border(struct win_layout *l, int win, struct win_rect area) {
 	struct win_state *w = &l->windows[win];
 
-	area = win_rect_intersection(area, w->win_bounds);
+	if (!l->draw_char)
+		return;
 
 	for (uint16_t y = area.y0; y < area.y1; y++) {
 		for (uint16_t x = area.x0; x < area.x1; x++) {
-			if (win_rect_contains_point(w->chars_bounds, x, y)) {
-				struct win_char *c =
-				    win_chars_get(w->chars, w->chars_bounds,
-				                  x - w->chars_bounds.x0,
-				                  y - w->chars_bounds.y0);
-
-				l->draw_char(x, y, *c, l->userdata);
-			} else {
+			if (!win_rect_contains_point(w->chars_bounds, x, y)) {
 				struct win_char ch = {
 					.code = ' ',
-					.fg = 0x0000,
-					.bg = 0xffff,
+					.bg = 0x1234,
+					.fg = 0xfedc,
 				};
 				l->draw_char(x, y, ch, l->userdata);
 			}
@@ -487,11 +451,17 @@ void win_layout_render(struct win_layout *l) {
 	for (int i = 0; i < l->draw_count; i++) {
 		struct win_state *w = &l->windows[l->draw_order[i]];
 
+		struct win_rect area = win_rect_intersection(l->dirty, w->win_bounds);
+		if (w->render) {
+			struct win_rect redraw_rect = area;
+			win_rect_translate(&redraw_rect, -w->chars_bounds.x0, -w->chars_bounds.y0);
+			w->render(l, l->draw_order[i], redraw_rect, w->userdata);
+		}
+
 		if (win_rect_intersects(w->win_bounds, l->dirty)) {
-			win_render_window(l, l->draw_order[i], l->dirty);
+			win_render_window_border(l, l->draw_order[i], area);
 		}
 	}
-
 	if (l->commit)
 		l->commit(l->userdata);
 

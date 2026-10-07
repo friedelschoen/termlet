@@ -9,5 +9,7 @@ rsource "wcwidth/Kconfig"
 rsource "keymap/Kconfig"
 rsource "libutf8/Kconfig"
 rsource "window/Kconfig"
+rsource "lua/Kconfig"
+rsource "fs/Kconfig"
 
 endmenu

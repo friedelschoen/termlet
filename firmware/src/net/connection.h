@@ -5,11 +5,17 @@
 #include <sys/types.h>
 #include <zephyr/kernel.h>
 
-struct termlet_connection {
-	uint16_t port;
+struct termlet_server;
+struct termlet_conn;
 
-	int listen_fd;
-	int client_fd;
+typedef void (*termlet_conn_accept_cb)(struct termlet_server *, struct termlet_conn *, void *);
+typedef void (*termlet_conn_poll_cb)(struct termlet_conn *, int, void *);
+
+struct termlet_conn {
+	struct termlet_server *srv;
+	int fd;
+	termlet_conn_poll_cb poll;
+	void *userdata;
 
 	/*
 	 * Multiple producers may write to the Telnet stream, e.g. keyboard
@@ -18,19 +24,24 @@ struct termlet_connection {
 	struct k_mutex write_lock;
 };
 
-int termlet_connection_init(struct termlet_connection *connection,
-                            uint16_t port);
+struct termlet_server {
+	uint16_t port;
+	int listen_fd;
 
-int termlet_connection_accept(struct termlet_connection *connection);
+	termlet_conn_accept_cb accept;
+	void *userdata;
 
-ssize_t termlet_connection_read(struct termlet_connection *connection,
-                                void *buffer,
-                                size_t size);
+	struct termlet_conn conns[CONFIG_ZVFS_POLL_MAX - 1];
+};
 
-int termlet_connection_write(struct termlet_connection *connection,
-                             const void *buffer,
-                             size_t size);
+int termlet_server_create(struct termlet_server *server, uint16_t port, termlet_conn_accept_cb accept);
 
-void termlet_connection_close_client(struct termlet_connection *connection);
+int termlet_server_poll(struct termlet_server *server, k_timeout_t timeout);
 
-void termlet_connection_deinit(struct termlet_connection *connection);
+ssize_t termlet_conn_read(struct termlet_conn *conn, void *buffer, size_t size);
+
+int termlet_conn_write(struct termlet_conn *conn, const void *buffer, size_t size);
+
+void termlet_conn_close(struct termlet_conn *conn);
+
+void termlet_server_close(struct termlet_server *server);

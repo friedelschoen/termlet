@@ -91,3 +91,10 @@ static inline void win_rect_include_rect(struct win_rect *r, struct win_rect oth
 	r->x1 = MAX(r->x1, other.x1);
 	r->y1 = MAX(r->y1, other.y1);
 }
+
+static inline void win_rect_translate(struct win_rect *r, uint16_t x, uint16_t y) {
+	r->x0 += x;
+	r->y0 += y;
+	r->x1 += x;
+	r->y1 += y;
+}

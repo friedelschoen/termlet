@@ -1,1 +1,2 @@
 rsource "lib/Kconfig"
+rsource "firmware/Kconfig.app"
