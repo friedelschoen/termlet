@@ -7,7 +7,7 @@ from typing import TextIO
 
 PRELUDE = """
 #include <zephyr/fs/fs.h>
-#include <sysfs.h>
+#include <sysfs/sysfs.h>
 
 """
 

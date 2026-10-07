@@ -18,5 +18,6 @@ endif()
 target_sources(app 
   PRIVATE 
     src/main.c 
+    src/devfs.c 
     src/net/connection.c 
     src/net/network.c)

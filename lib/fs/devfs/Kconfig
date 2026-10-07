@@ -1,0 +1,18 @@
+menuconfig DEVFS
+	bool "devices tree"
+	default y
+
+    depends on FILE_SYSTEM
+
+if DEVFS
+
+config DEVFS_MAX_FDS
+	int "Maximum number of open descriptors"
+	default 8
+	range 1 64
+
+config DEVFS_INIT_PRIORITY
+	int "Initialization priority"
+	default 90
+
+endif

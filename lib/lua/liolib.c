@@ -725,7 +725,7 @@ static void createstdfile (lua_State *L, const char *k,
   LStream *p = newprefile(L);
   int ret = luaf_open(&p->f, path, mode);
   if (ret != 0) {
-    luaL_error(L, "cannot open %s: %d", path, ret); 
+    luaL_error(L, "cannot open %s: %d", path, -ret); 
     return;
   }
   p->closef = &io_noclose;
