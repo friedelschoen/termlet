@@ -1,8 +1,8 @@
-#include "zephyr/fs/fs_interface.h"
-
+#include <devfs/devfs.h>
 #include <lauxlib.h>
 #include <lualib.h>
-#include <sysfs.h>
+#include <sysfs/sysfs.h>
+#include <termlet_fs.h>
 #include <zephyr/fs/fs.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -15,8 +15,11 @@ static struct sysfs_fs sysfs_data = {
 	.root = &sysfs_root,
 };
 
+extern const struct devfs_entry devices[];
+
 struct fs_mount_t mountpoints[] = {
-	{ .type = FS_SYSFS, .mnt_point = "/sys", .fs_data = &sysfs_data }
+	{ .type = FS_SYSFS, .mnt_point = "/sys", .fs_data = &sysfs_data },
+	{ .type = FS_DEVFS, .mnt_point = "/dev", .fs_data = (void *) devices }
 };
 
 K_HEAP_DEFINE(lua_heap, CONFIG_LUA_HEAP_SIZE);
@@ -108,6 +111,21 @@ void test() {
 	fclose(f);
 }
 
+static int openlibs(lua_State *L) {
+	luaL_openselectedlibs(
+	    L,
+	    LUA_GLIBK |
+	        LUA_LOADLIBK |
+	        LUA_STRLIBK |
+	        LUA_UTF8LIBK |
+	        LUA_TABLIBK |
+	        LUA_MATHLIBK |
+	        LUA_IOLIBK,
+	    0);
+
+	return 0;
+}
+
 int main() {
 	int ret;
 
@@ -119,26 +137,28 @@ int main() {
 
 	walk_tree("/", 0);
 
-//	test();
+	//	test();
 
 	lua_State *L = lua_newstate(lua_alloc, &lua_heap, 42);
+	if (L == NULL) {
+		LOG_ERR("cannot create Lua state");
+		return 0;
+	}
 
-	/*
-	[x] LUA_GLIBK : the basic library.
-	[x] LUA_LOADLIBK : the package library.
-	[ ] LUA_COLIBK : the coroutine library.
-	[x] LUA_STRLIBK : the string library.
-	[x] LUA_UTF8LIBK : the UTF-8 library.
-	[x] LUA_TABLIBK : the table library.
-	[x] LUA_MATHLIBK : the mathematical library.
-	[x] LUA_IOLIBK : the I/O library.
-	[ ] ~LUA_OSLIBK~ : the operating system library. disabled.
-	[ ] LUA_DBLIBK : the debug library.
-	*/
-	luaL_openselectedlibs(L, LUA_GLIBK | LUA_LOADLIBK | LUA_IOLIBK | LUA_STRLIBK | LUA_UTF8LIBK | LUA_TABLIBK | LUA_MATHLIBK, 0);
+	lua_pushcfunction(L, openlibs);
 
-	if (luaL_dofile(L, "/sys/init.lua") != LUA_OK)
+	int status = lua_pcall(L, 0, 0, 0);
+	if (status != LUA_OK) {
+		LOG_ERR("cannot initialize Lua: %s", lua_tostring(L, -1));
+		lua_close(L);
+		return 0;
+	}
+
+	status = luaL_dofile(L, "/sys/init.lua");
+	if (status != LUA_OK) {
 		LOG_ERR("lua error: %s", lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
 
 	lua_close(L);
 

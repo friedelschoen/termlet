@@ -1,11 +1,8 @@
 #include "sysfs.h"
 
-#include "zephyr/fs/fs_interface.h"
-#include "zephyr/sys/printk.h"
-#include "zephyr/toolchain.h"
-
 #include <errno.h>
 #include <string.h>
+#include <termlet_fs.h>
 #include <zephyr/fs/fs.h>
 #include <zephyr/fs/fs_sys.h>
 #include <zephyr/init.h>
