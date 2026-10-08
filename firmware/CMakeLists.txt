@@ -19,5 +19,9 @@ target_sources(app
   PRIVATE 
     src/main.c 
     src/devfs.c 
+    src/render.c 
     src/net/connection.c 
-    src/net/network.c)
+    src/net/network.c
+    src/corelib/corelib.c 
+    src/corelib/windowlib.c 
+)
