@@ -269,7 +269,7 @@ static void win_layout_apply(struct win_layout *l, int *order, int order_count) 
 				    win_rect_width(w->chars_bounds),
 				    win_rect_height(w->chars_bounds),
 				    w->visible,
-				    w->userdata);
+				    w->layout_userdata);
 		}
 	}
 }
@@ -372,7 +372,7 @@ int win_layout_new_overlay(struct win_layout *l, uint8_t z_index, enum win_edge 
 	return win_layout_new_edge(l, WIN_MODE_OVERLAY, z_index, edge, size);
 }
 
-void win_layout_dealloc(struct win_layout *l, int win) {
+void win_layout_remove(struct win_layout *l, int win) {
 	struct win_state *w = &l->windows[win];
 
 	if (w->used && w->visible)
@@ -382,10 +382,13 @@ void win_layout_dealloc(struct win_layout *l, int win) {
 	win_layout_update(l);
 }
 
-void win_layout_set_handler(struct win_layout *l, int win, win_render_handler_t render, win_layout_handler_t layout, void *userdata) {
+void win_layout_set_render(struct win_layout *l, int win, win_render_handler_t render, void *userdata) {
 	l->windows[win].render = render;
+	l->windows[win].render_userdata = userdata;
+}
+void win_layout_set_layout(struct win_layout *l, int win, win_layout_handler_t layout, void *userdata) {
 	l->windows[win].layout = layout;
-	l->windows[win].userdata = userdata;
+	l->windows[win].layout_userdata = userdata;
 }
 
 void win_layout_enable(struct win_layout *l, int win, bool enabled) {
@@ -455,7 +458,7 @@ void win_layout_render(struct win_layout *l) {
 		if (w->render) {
 			struct win_rect redraw_rect = area;
 			win_rect_translate(&redraw_rect, -w->chars_bounds.x0, -w->chars_bounds.y0);
-			w->render(l, l->draw_order[i], redraw_rect, w->userdata);
+			w->render(l, l->draw_order[i], redraw_rect, w->render_userdata);
 		}
 
 		if (win_rect_intersects(w->win_bounds, l->dirty)) {

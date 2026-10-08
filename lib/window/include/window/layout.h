@@ -58,8 +58,9 @@ struct win_state {
 	uint16_t height;
 
 	win_render_handler_t render;
+	void *render_userdata;
 	win_layout_handler_t layout;
-	void *userdata;
+	void *layout_userdata;
 
 	struct win_rect win_bounds;   /* window bounds, incl. border */
 	struct win_rect chars_bounds; /* content bounds, excl. border */
@@ -83,9 +84,10 @@ int win_layout_new_main(struct win_layout *l, uint8_t z_index);
 int win_layout_new_dialog(struct win_layout *l, uint8_t z_index, int width, int height);
 int win_layout_new_clip(struct win_layout *l, uint8_t z_index, enum win_edge edge, int size);
 int win_layout_new_overlay(struct win_layout *l, uint8_t z_index, enum win_edge edge, int size);
-void win_layout_dealloc(struct win_layout *l, int win);
+void win_layout_remove(struct win_layout *l, int win);
 
-void win_layout_set_handler(struct win_layout *l, int win, win_render_handler_t render, win_layout_handler_t layout, void *userdata);
+void win_layout_set_render(struct win_layout *l, int win, win_render_handler_t render, void *userdata);
+void win_layout_set_layout(struct win_layout *l, int win, win_layout_handler_t layout, void *userdata);
 void win_layout_enable(struct win_layout *l, int win, bool enabled);
 void win_layout_resize(struct win_layout *l, int win, int w, int h);
 
