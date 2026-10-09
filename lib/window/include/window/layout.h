@@ -1,7 +1,9 @@
 #pragma once
 
 #include "geom.h"
+#include "input.h"
 
+#include <keymap.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/input/input.h>
@@ -76,7 +78,7 @@ typedef void (*win_layout_handler_t)(struct win_state *w,
 
 /** This handler is called on input, depending on current focus. */
 typedef void (*win_input_handler_t)(struct win_state *w,
-                                    struct input_event *evt, void *userdata);
+                                    union win_input_event *ev, void *userdata);
 
 struct win_state {
 	struct win_layout *l; /**< layout this window belongs to */
@@ -90,7 +92,7 @@ struct win_state {
 
 	/* requested geometry */
 	uint16_t width;  /**< requested width, might be ignored depending on window-mode */
-	uint16_t height; /**< requested height, might be ignored depending on window-height */
+	uint16_t height; /**< requested height, might be ignored depending on window-mode */
 
 	/* callbacks */
 	win_render_handler_t render;
@@ -117,6 +119,14 @@ struct win_layout {
 	struct win_rect dirty;
 	struct win_state *focus;
 
+	uint32_t cell_width, cell_height, scroll_speed;
+
+	uint32_t x, y, scroll, hscroll;
+	uint32_t disp_x, disp_y, disp_scroll, disp_hscroll;
+	keymap_compose_state_t compose_state;
+	keymap_state_t keymap_state;
+	bool do_compose;
+
 	void (*draw_char)(uint16_t x, uint16_t y, struct win_char ch, void *userdata);
 	void (*commit)(void *userdata);
 	void *userdata;
@@ -136,5 +146,5 @@ void win_layout_update(struct win_layout *l);
  * might ignore calls outside handler.
  */
 void win_layout_draw_char(struct win_state *w, int x, int y, struct win_char ch);
-void win_layout_input(struct input_event *ev);
+void win_layout_input(struct win_layout *l, struct input_event *ev);
 void win_layout_render(struct win_layout *l);

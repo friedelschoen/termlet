@@ -1,3 +1,5 @@
+#include "window/input.h"
+
 #include <assert.h>
 #include <window/geom.h>
 #include <window/layout.h>
@@ -402,4 +404,166 @@ void win_layout_render(struct win_layout *l) {
 		l->commit(l->userdata);
 
 	l->dirty = (struct win_rect){ 0 };
+}
+
+static bool win_layout_handle_keyboard(struct win_layout *l, union win_input_event *ev) {
+	return 0; /* not handled */
+}
+
+static void win_layout_dispatch_keyboard(struct win_layout *l, struct input_event *ev) {
+	union win_input_event out;
+	out.type = WIN_INPUT_KEY;
+
+	if (ev->value == 2)
+		/* ignoring autorepeat for now */
+		return;
+
+	out.key.pressed = ev->value;
+	out.key.keysym = keymap_lookup(
+	    &l->keymap_state,
+	    ev->code,
+	    ev->value,
+	    &out.key.utf8);
+
+	out.key.modifiers = l->keymap_state;
+
+	if (win_layout_handle_keyboard(l, &out))
+		return;
+
+	if (l->do_compose && out.key.pressed) {
+		switch (keymap_compose_feed(
+		    &l->compose_state,
+		    &out.key.keysym,
+		    &out.key.utf8)) {
+			case KEYMAP_COMPOSE_COMPOSING:
+			case KEYMAP_COMPOSE_CANCELLED:
+				out.key.utf8 = NULL;
+				break;
+
+			case KEYMAP_COMPOSE_COMPOSED:
+			case KEYMAP_COMPOSE_NOTHING:
+				break;
+		}
+	}
+
+	if (!ev->sync)
+		/* do not dispatch */
+		return;
+
+	if (win_layout_handle_keyboard(l, &out))
+		return;
+
+	struct win_state *w = l->focus;
+	if (!w)
+		/* no focus */
+		return;
+
+	if (w->input)
+		w->input(w, &out, w->input_userdata);
+}
+
+static struct win_state *win_layout_window_at(struct win_layout *l, uint16_t x, uint16_t y) {
+	/* drawn last lays on top, do reverse iterate */
+	for (int i = l->draw_count - 1; i >= 0; i--) {
+		struct win_state *w = l->draw_order[i];
+		if (win_rect_contains_point(w->chars_bounds, x, y)) {
+			return w;
+		}
+	}
+	return NULL;
+}
+
+static void win_layout_dispatch_mouse(struct win_layout *l, const struct input_event *ev) {
+	union win_input_event out;
+	out.type = WIN_INPUT_POINTER;
+
+	const int32_t cw = l->cell_width ? l->cell_width : 1;
+	const int32_t ch = l->cell_height ? l->cell_height : 1;
+	const int32_t ss = l->scroll_speed ? l->scroll_speed : 1;
+
+	if (ev->type != INPUT_EV_ABS && ev->type != INPUT_EV_REL)
+		return;
+
+	switch (ev->code) {
+		case INPUT_ABS_X:
+			if (ev->type == INPUT_EV_ABS)
+				l->x = ev->value;
+			else
+				l->x += ev->value;
+			break;
+
+		case INPUT_ABS_Y:
+			if (ev->type == INPUT_EV_ABS)
+				l->y = ev->value;
+			else
+				l->y += ev->value;
+			break;
+
+		case INPUT_REL_WHEEL:
+			if (ev->type == INPUT_EV_ABS)
+				l->scroll = ev->value;
+			else
+				l->scroll += ev->value;
+			break;
+
+		case INPUT_REL_HWHEEL:
+			if (ev->type == INPUT_EV_ABS)
+				l->hscroll = ev->value;
+			else
+				l->hscroll += ev->value;
+			break;
+
+		default:
+			return;
+	}
+
+	out.pointer.x = l->x / cw;
+	out.pointer.y = l->y / ch;
+
+	out.pointer.dx = out.pointer.x - l->disp_x;
+	out.pointer.dy = out.pointer.y - l->disp_y;
+
+	out.pointer.scroll = l->scroll / ss;
+	out.pointer.hscroll = l->hscroll / ss;
+
+	out.pointer.dscroll = out.pointer.scroll - l->disp_scroll;
+	out.pointer.dhscroll = out.pointer.hscroll - l->disp_hscroll;
+
+	if (!ev->sync)
+		/* do not dispatch */
+		return;
+
+	l->disp_x = out.pointer.x;
+	l->disp_y = out.pointer.y;
+	l->disp_scroll = out.pointer.scroll;
+	l->disp_hscroll = out.pointer.hscroll;
+
+	struct win_state *w = win_layout_window_at(l, out.pointer.x, out.pointer.y);
+	if (!w) {
+		l->focus = NULL;
+		return;
+	}
+
+	if (w->focusable && l->focus != w)
+		l->focus = w;
+
+	if (w->input) {
+		/* events are relative to chars_bounds */
+		out.pointer.x -= w->chars_bounds.x0;
+		out.pointer.y -= w->chars_bounds.y0;
+
+		w->input(w, &out, w->input_userdata);
+	}
+}
+
+void win_layout_input(struct win_layout *l, struct input_event *ev) {
+	switch (ev->type) {
+		case INPUT_EV_KEY:
+			win_layout_dispatch_keyboard(l, ev);
+			break;
+		case INPUT_EV_ABS:
+		case INPUT_EV_REL:
+			win_layout_dispatch_mouse(l, ev);
+			break;
+	}
 }
