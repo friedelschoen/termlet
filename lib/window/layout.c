@@ -266,7 +266,7 @@ static void win_layout_apply(struct win_layout *l) {
 			    win_rect_width(w->chars_bounds),
 			    win_rect_height(w->chars_bounds),
 			    w->visible,
-			    w->layout_userdata);
+			    w->userdata);
 	}
 }
 
@@ -337,36 +337,6 @@ void win_layout_remove(struct win_state *w) {
 	win_layout_update(w->l);
 }
 
-void win_layout_set_render(struct win_layout *l, int win, win_render_handler_t render, void *userdata) {
-	l->windows[win].render = render;
-	l->windows[win].render_userdata = userdata;
-}
-void win_layout_set_layout(struct win_layout *l, int win, win_layout_handler_t layout, void *userdata) {
-	l->windows[win].layout = layout;
-	l->windows[win].layout_userdata = userdata;
-}
-
-void win_layout_enable(struct win_layout *l, int win, bool enabled) {
-	if (l->windows[win].enabled == enabled)
-		return;
-
-	l->windows[win].enabled = enabled;
-
-	win_layout_update(l);
-}
-
-void win_layout_resize(struct win_layout *l, int win, int width, int height) {
-	struct win_state *w = &l->windows[win];
-
-	if (w->width == width && w->height == height)
-		return;
-
-	w->width = width;
-	w->height = height;
-
-	win_layout_update(l);
-}
-
 void win_layout_draw_char(struct win_state *w, int x, int y, struct win_char ch) {
 	if (!w->l->draw_char ||
 	    x < 0 || y < 0 ||
@@ -420,14 +390,12 @@ void win_layout_render(struct win_layout *l) {
 		}
 
 		if (w->render)
-			w->render(w, redraw_rect, w->render_userdata);
+			w->render(w, redraw_rect, w->userdata);
 
-		/*	if (win_rect_intersects(l->dirty, w->win_bounds)) */ {
-			struct win_rect area =
-			    win_rect_intersection(l->dirty, w->win_bounds);
+		struct win_rect area =
+		    win_rect_intersection(l->dirty, w->win_bounds);
 
-			win_render_window_border(w, area);
-		}
+		win_render_window_border(w, area);
 	}
 
 	if (l->commit)
@@ -436,38 +404,36 @@ void win_layout_render(struct win_layout *l) {
 	l->dirty = (struct win_rect){ 0 };
 }
 
-static bool win_layout_handle_keyboard(struct win_layout *l, union win_input_event *ev) {
+static bool win_layout_handle_keyboard(struct win_layout *l, struct win_key_event *ev) {
 	return 0; /* not handled */
 }
 
 static void win_layout_dispatch_keyboard(struct win_layout *l, struct input_event *ev) {
-	union win_input_event out;
-	out.type = WIN_INPUT_KEY;
-
+	struct win_key_event out;
 	if (ev->value == 2)
 		/* ignoring autorepeat for now */
 		return;
 
-	out.key.pressed = ev->value;
-	out.key.keysym = keymap_lookup(
+	out.pressed = ev->value;
+	out.keysym = keymap_lookup(
 	    &l->keymap_state,
 	    ev->code,
 	    ev->value,
-	    &out.key.utf8);
+	    &out.utf8);
 
-	out.key.modifiers = l->keymap_state;
+	out.modifiers = l->keymap_state;
 
 	if (win_layout_handle_keyboard(l, &out))
 		return;
 
-	if (l->do_compose && out.key.pressed) {
+	if (l->do_compose && out.pressed) {
 		switch (keymap_compose_feed(
 		    &l->compose_state,
-		    &out.key.keysym,
-		    &out.key.utf8)) {
+		    &out.keysym,
+		    &out.utf8)) {
 			case KEYMAP_COMPOSE_COMPOSING:
 			case KEYMAP_COMPOSE_CANCELLED:
-				out.key.utf8 = NULL;
+				out.utf8 = NULL;
 				break;
 
 			case KEYMAP_COMPOSE_COMPOSED:
@@ -488,8 +454,8 @@ static void win_layout_dispatch_keyboard(struct win_layout *l, struct input_even
 		/* no focus */
 		return;
 
-	if (w->input)
-		w->input(w, &out, w->input_userdata);
+	if (w->key)
+		w->key(w, &out, w->userdata);
 }
 
 static struct win_state *win_layout_window_at(struct win_layout *l, uint16_t x, uint16_t y) {
@@ -503,8 +469,7 @@ static struct win_state *win_layout_window_at(struct win_layout *l, uint16_t x, 
 }
 
 static void win_layout_dispatch_mouse(struct win_layout *l, const struct input_event *ev) {
-	union win_input_event out;
-	out.type = WIN_INPUT_POINTER;
+	struct win_pointer_event out;
 
 	const int32_t cw = l->cell_width ? l->cell_width : 1;
 	const int32_t ch = l->cell_height ? l->cell_height : 1;
@@ -546,28 +511,28 @@ static void win_layout_dispatch_mouse(struct win_layout *l, const struct input_e
 			return;
 	}
 
-	out.pointer.x = l->x / cw;
-	out.pointer.y = l->y / ch;
+	out.x = l->x / cw;
+	out.y = l->y / ch;
 
-	out.pointer.dx = out.pointer.x - l->disp_x;
-	out.pointer.dy = out.pointer.y - l->disp_y;
+	out.dx = out.x - l->disp_x;
+	out.dy = out.y - l->disp_y;
 
-	out.pointer.scroll = l->scroll / ss;
-	out.pointer.hscroll = l->hscroll / ss;
+	out.scroll = l->scroll / ss;
+	out.hscroll = l->hscroll / ss;
 
-	out.pointer.dscroll = out.pointer.scroll - l->disp_scroll;
-	out.pointer.dhscroll = out.pointer.hscroll - l->disp_hscroll;
+	out.dscroll = out.scroll - l->disp_scroll;
+	out.dhscroll = out.hscroll - l->disp_hscroll;
 
 	if (!ev->sync)
 		/* do not dispatch */
 		return;
 
-	l->disp_x = out.pointer.x;
-	l->disp_y = out.pointer.y;
-	l->disp_scroll = out.pointer.scroll;
-	l->disp_hscroll = out.pointer.hscroll;
+	l->disp_x = out.x;
+	l->disp_y = out.y;
+	l->disp_scroll = out.scroll;
+	l->disp_hscroll = out.hscroll;
 
-	struct win_state *w = win_layout_window_at(l, out.pointer.x, out.pointer.y);
+	struct win_state *w = win_layout_window_at(l, out.x, out.y);
 	if (!w) {
 		l->focus = NULL;
 		return;
@@ -576,12 +541,12 @@ static void win_layout_dispatch_mouse(struct win_layout *l, const struct input_e
 	if (w->focusable && l->focus != w)
 		l->focus = w;
 
-	if (w->input) {
+	if (w->pointer) {
 		/* events are relative to chars_bounds */
-		out.pointer.x -= w->chars_bounds.x0;
-		out.pointer.y -= w->chars_bounds.y0;
+		out.x -= w->chars_bounds.x0;
+		out.y -= w->chars_bounds.y0;
 
-		w->input(w, &out, w->input_userdata);
+		w->pointer(w, &out, w->userdata);
 	}
 }
 

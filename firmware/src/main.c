@@ -1,6 +1,8 @@
 #include "corelib/corelib.h"
 #include "internal.h"
 #include "window/layout.h"
+#include "zephyr/device.h"
+#include "zephyr/input/input.h"
 
 #include <devfs/devfs.h>
 #include <lauxlib.h>
@@ -132,7 +134,7 @@ static int openlibs(lua_State *L) {
 	        LUA_IOLIBK,
 	    1);
 
-    corelib_register(L);
+	corelib_register(L);
 
 	return 0;
 }
@@ -196,6 +198,10 @@ void commit(void *userdata) {
 	draw_commit(r);
 }
 
+void input_handle(struct input_event *evt, void *userdata) {
+	win_layout_input(&layout, evt);
+}
+
 int main() {
 	init_mount();
 	init_fonts();
@@ -242,3 +248,5 @@ int main() {
 	lua_close(L);
 	return 0;
 }
+
+INPUT_CALLBACK_DEFINE(NULL, input_handle, NULL);

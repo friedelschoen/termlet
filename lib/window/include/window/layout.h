@@ -77,8 +77,12 @@ typedef void (*win_layout_handler_t)(struct win_state *w,
                                      bool visible, void *userdata);
 
 /** This handler is called on input, depending on current focus. */
-typedef void (*win_input_handler_t)(struct win_state *w,
-                                    union win_input_event *ev, void *userdata);
+typedef void (*win_key_handler_t)(struct win_state *w,
+                                  struct win_key_event *ev, void *userdata);
+
+/** This handler is called on input, depending on current focus. */
+typedef void (*win_pointer_handler_t)(struct win_state *w,
+                                      struct win_pointer_event *ev, void *userdata);
 
 struct win_state {
 	struct win_layout *l; /**< layout this window belongs to */
@@ -96,13 +100,12 @@ struct win_state {
 
 	/* callbacks */
 	win_render_handler_t render;
-	void *render_userdata;
 	win_layout_handler_t layout;
-	void *layout_userdata;
-	win_input_handler_t input;
-	void *input_userdata;
+	win_key_handler_t key;
+	win_pointer_handler_t pointer;
+	void *userdata;
 
-	/* set by layout_win_apply(). NO TOUCHY TOUCHY! */
+	/* set by win_layout_update(). NO TOUCHY TOUCHY! */
 	struct win_state *prev;       /**< READONLY. next window (see win_layout_update()) */
 	struct win_state *next;       /**< READONLY. previous window (see win_layout_update()) */
 	bool used;                    /**< READONLY. if this slot is being used */

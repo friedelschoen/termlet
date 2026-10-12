@@ -6,6 +6,8 @@ function Buffer.new(capacity)
 		lines = {},
 		capacity = capacity or 1000,
 
+		width = 0,
+		height = 0,
 		head = 1,
 		count = 1,
 		scroll = 0,
@@ -73,16 +75,16 @@ function Buffer:write(...)
 	return self
 end
 
-function Buffer:_render_line(window, y, line, x0, x1)
+function Buffer:_render_line(window, y, line)
 	-- hscroll causes the viewport to move, so shifting the start also works
 	local x = -self.hscroll
 
 	for _, cp in utf8.codes(line) do
-		if x >= x1 then
+		if x >= self.width then
 			break
 		end
 
-		if x >= x0 then
+		if x >= 0 then
 			window:draw_char(x, y, {
 				char = cp,
 				fg = self.fg,
@@ -93,8 +95,8 @@ function Buffer:_render_line(window, y, line, x0, x1)
 		x = x + 1
 	end
 
-	while x < x1 do
-		if x >= x0 then
+	while x < self.width do
+		if x >= 0 then
 			window:draw_char(x, y, {
 				char = " ",
 				fg = self.fg,
@@ -106,7 +108,7 @@ function Buffer:_render_line(window, y, line, x0, x1)
 end
 
 function Buffer:scroll_by(delta)
-	self.scroll = math.max(0, math.min(self.scroll + delta, self.count - 1))
+	self.scroll = math.max(0, math.min(self.scroll + delta, self.count - 1 - self.height))
 	return self
 end
 
@@ -115,44 +117,31 @@ function Buffer:hscroll_by(delta)
 	return self
 end
 
-function dump(o)
-	if type(o) == "table" then
-		local s = "{ "
-		for k, v in pairs(o) do
-			x = k
-			if type(x) ~= "number" then
-				x = '"' .. x .. '"'
+function Buffer:attach(window)
+	window:on("render", function(rect)
+		local bounds = window.chars_bounds
+		self.width = bounds.x1 - bounds.x0
+		self.height = bounds.y1 - bounds.y0
+
+		local bottom = self.count - self.scroll
+		local top = math.max(1, bottom - self.height + 1)
+
+		for y = 0, self.height do
+			local logical = top + y
+
+			local line = ""
+			if logical >= 1 and logical <= self.count then
+				line = self.lines[physical_index(self, logical)] or ""
 			end
-			s = s .. "[" .. x .. "] = " .. dump(v) .. ","
+
+			self:_render_line(window, y, line, 0)
 		end
-		return s .. "} "
-	else
-		return tostring(o)
-	end
-end
+	end)
 
-function Buffer:render(window, rect)
-	local bounds = window.chars_bounds
-	local width = bounds.x1 - bounds.x0
-	local height = bounds.y1 - bounds.y0
-
-	local bottom = self.count - self.scroll
-	local top = math.max(1, bottom - height + 1)
-
-	for y = 0, height do
-		local logical = top + y
-
-		local line = ""
-		if logical >= 1 and logical <= self.count then
-			line = self.lines[physical_index(self, logical)] or ""
-		end
-
-		self:_render_line(window, y, line, 0, width)
-	end
-end
-
-function Buffer:layout(w, width, height, visible)
-	-- do nothing
+	window:on("pointer", function(event)
+		self:scroll_by(event.dscroll)
+		self:hscroll_by(event.dhscroll)
+	end)
 end
 
 return Buffer

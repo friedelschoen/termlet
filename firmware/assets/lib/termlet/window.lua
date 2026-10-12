@@ -81,7 +81,7 @@ function Window:draw_char(x, y, char)
 end
 
 function Window:on(event, fn)
-	if event ~= "layout" and event ~= "render" and event ~= "input" then
+	if event ~= "layout" and event ~= "render" and event ~= "key" and event ~= "pointer" then
 		error("unsupported window event: " .. tostring(event), 2)
 	end
 

@@ -1,16 +1,19 @@
 #include "callback.h"
 #include "corelib.h"
-#include "window/input.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <lauxlib.h>
 #include <libutf8.h>
 #include <lua.h>
+#include <window/input.h>
 #include <window/layout.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_DECLARE(app);
+
+#define win_index(w) ((w) - (w)->l->windows)
+
 
 struct colorname {
 	const char *name;
@@ -38,10 +41,12 @@ static const struct colorname colors[16] = {
 	{ "bright_white", 0xffff, 0xffffff },
 };
 
+struct window_cbdata {
+	struct lua_callback layout, render, key, pointer;
+};
+
 struct win_layout layout;
-static struct lua_callback layout_cbdata[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
-static struct lua_callback render_cbdata[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
-static struct lua_callback input_cbdata[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
+static struct window_cbdata cbdata[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
 
 /* == ARBINARY TYPE HELPERS */
 
@@ -177,6 +182,7 @@ static int win_new(lua_State *L) {
 	if (!w)
 		return luaL_error(L, "cannot create window");
 
+	w->userdata = &cbdata[win_index(w)];
 	lua_pushlightuserdata(L, w);
 	return 1;
 }
@@ -274,13 +280,15 @@ static int win_get(lua_State *L) {
 	return luaL_error(L, "unknown window property '%s'", key);
 }
 
+#define wcbdata(u) ((struct window_cbdata *) (u))
 
 static void lua_layout_handler(struct win_state *w,
                                uint16_t cols, uint16_t rows,
                                bool visible, void *userdata) {
 	ARG_UNUSED(w);
-
-	struct lua_callback *cb = userdata;
+	struct lua_callback *cb = &wcbdata(userdata)->layout;
+	if (cb->ref == LUA_NOREF)
+		return;
 	lua_State *L = cb->L;
 
 	lua_callback_push(cb);
@@ -298,7 +306,9 @@ static void lua_render_handler(struct win_state *w,
                                struct win_rect rect, void *userdata) {
 	ARG_UNUSED(w);
 
-	struct lua_callback *cb = userdata;
+	struct lua_callback *cb = &wcbdata(userdata)->render;
+	if (cb->ref == LUA_NOREF)
+		return;
 	lua_State *L = cb->L;
 
 	lua_callback_push(cb);
@@ -310,22 +320,63 @@ static void lua_render_handler(struct win_state *w,
 	}
 }
 
-static void lua_input_handler(struct win_state *w, union win_input_event *ev, void *userdata) {
+static void lua_key_handler(struct win_state *w, struct win_key_event *ev, void *userdata) {
 	ARG_UNUSED(w);
 
-	struct lua_callback *cb = userdata;
+	struct lua_callback *cb = &wcbdata(userdata)->key;
+	if (cb->ref == LUA_NOREF)
+		return;
 	lua_State *L = cb->L;
 
 	lua_callback_push(cb);
-	/* TODO: push event */
+	lua_createtable(L, 0, 4);
+	lua_pushinteger(L, ev->keysym);
+	lua_setfield(L, -2, "keysym");
+	lua_pushinteger(L, ev->modifiers);
+	lua_setfield(L, -2, "modifiers");
+	lua_pushboolean(L, ev->pressed);
+	lua_setfield(L, -2, "pressed");
+	lua_pushstring(L, ev->utf8);
+	lua_setfield(L, -2, "utf8");
 
-	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+	if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
 		LOG_ERR("render callback: %s", lua_tostring(L, -1));
 		lua_pop(L, 1);
 	}
 }
 
-#define win_index(w) ((w) - (w)->l->windows)
+static void lua_pointer_handler(struct win_state *w, struct win_pointer_event *ev, void *userdata) {
+	ARG_UNUSED(w);
+
+	struct lua_callback *cb = &wcbdata(userdata)->pointer;
+	if (cb->ref == LUA_NOREF)
+		return;
+	lua_State *L = cb->L;
+
+	lua_callback_push(cb);
+	lua_createtable(L, 0, 8);
+	lua_pushinteger(L, ev->x);
+	lua_setfield(L, -2, "x");
+	lua_pushinteger(L, ev->y);
+	lua_setfield(L, -2, "y");
+	lua_pushinteger(L, ev->scroll);
+	lua_setfield(L, -2, "scroll");
+	lua_pushinteger(L, ev->hscroll);
+	lua_setfield(L, -2, "hscroll");
+	lua_pushinteger(L, ev->dx);
+	lua_setfield(L, -2, "dx");
+	lua_pushinteger(L, ev->dy);
+	lua_setfield(L, -2, "dy");
+	lua_pushinteger(L, ev->dscroll);
+	lua_setfield(L, -2, "dscroll");
+	lua_pushinteger(L, ev->dhscroll);
+	lua_setfield(L, -2, "dhscroll");
+
+	if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+		LOG_ERR("render callback: %s", lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
+}
 
 static int win_set(lua_State *L) {
 	struct win_state *w = lua_checkwindow(L, 1);
@@ -392,33 +443,41 @@ static int win_set(lua_State *L) {
 	if (strcmp(key, "layout") == 0) {
 		luaL_checktype(L, 3, LUA_TFUNCTION);
 
-		struct lua_callback *cb = &layout_cbdata[win_index(w)];
+		struct lua_callback *cb = &cbdata[win_index(w)].layout;
 		lua_callback_set(L, cb, 3);
 
 		w->layout = lua_layout_handler;
-		w->layout_userdata = cb;
 		return 0;
 	}
 
 	if (strcmp(key, "render") == 0) {
 		luaL_checktype(L, 3, LUA_TFUNCTION);
 
-		struct lua_callback *cb = &render_cbdata[win_index(w)];
+		struct lua_callback *cb = &cbdata[win_index(w)].render;
 		lua_callback_set(L, cb, 3);
 
 		w->render = lua_render_handler;
-		w->render_userdata = cb;
 		return 0;
 	}
 
-	if (strcmp(key, "input") == 0) {
+	if (strcmp(key, "key") == 0) {
 		luaL_checktype(L, 3, LUA_TFUNCTION);
 
-		struct lua_callback *cb = &input_cbdata[win_index(w)];
+		struct lua_callback *cb = &cbdata[win_index(w)].key;
 		lua_callback_set(L, cb, 3);
 
-		w->input = lua_input_handler;
-		w->input_userdata = cb;
+		w->key = lua_key_handler;
+		return 0;
+	}
+
+
+	if (strcmp(key, "pointer") == 0) {
+		luaL_checktype(L, 3, LUA_TFUNCTION);
+
+		struct lua_callback *cb = &cbdata[win_index(w)].pointer;
+		lua_callback_set(L, cb, 3);
+
+		w->pointer = lua_pointer_handler;
 		return 0;
 	}
 
@@ -537,9 +596,10 @@ static const luaL_Reg windowlib[] = {
 
 static int luaopen_windowlib(lua_State *L) {
 	for (int i = 0; i < CONFIG_WINDOW_LAYOUT_MAX_WINDOWS; i++) {
-		lua_callback_init(&layout_cbdata[i]);
-		lua_callback_init(&render_cbdata[i]);
-		lua_callback_init(&input_cbdata[i]);
+		lua_callback_init(&cbdata[i].layout);
+		lua_callback_init(&cbdata[i].render);
+		lua_callback_init(&cbdata[i].key);
+		lua_callback_init(&cbdata[i].pointer);
 	}
 
 	luaL_newlib(L, windowlib);
@@ -548,9 +608,10 @@ static int luaopen_windowlib(lua_State *L) {
 
 void luaclose_windowlib(lua_State *L) {
 	for (int i = 0; i < CONFIG_WINDOW_LAYOUT_MAX_WINDOWS; i++) {
-		lua_callback_clear(&layout_cbdata[i]);
-		lua_callback_clear(&render_cbdata[i]);
-		lua_callback_clear(&input_cbdata[i]);
+		lua_callback_clear(&cbdata[i].layout);
+		lua_callback_clear(&cbdata[i].render);
+		lua_callback_clear(&cbdata[i].key);
+		lua_callback_clear(&cbdata[i].pointer);
 	}
 }
 
