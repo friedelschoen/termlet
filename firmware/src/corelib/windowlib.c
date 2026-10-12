@@ -1,5 +1,8 @@
+#include "callback.h"
 #include "corelib.h"
+#include "window/input.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <lauxlib.h>
 #include <libutf8.h>
@@ -9,137 +12,40 @@
 
 LOG_MODULE_DECLARE(app);
 
+struct colorname {
+	const char *name;
+	uint16_t rgb565;
+	uint32_t rgb888;
+};
 
-struct lua_callback {
-	lua_State *L;
-	int ref;
+static const struct colorname colors[16] = {
+	{ "black", 0x0000, 0x000000 },
+	{ "red", 0xc800, 0xcd0000 },
+	{ "green", 0x0660, 0x00cd00 },
+	{ "yellow", 0xce60, 0xcdcd00 },
+	{ "blue", 0x001d, 0x0000ee },
+	{ "magenta", 0xc819, 0xcd00cd },
+	{ "cyan", 0x0679, 0x00cdcd },
+	{ "white", 0xe73c, 0xe5e5e5 },
+
+	{ "bright_black", 0x7bef, 0x7f7f7f },
+	{ "bright_red", 0xf800, 0xff0000 },
+	{ "bright_green", 0x07e0, 0x00ff00 },
+	{ "bright_yellow", 0xffe0, 0xffff00 },
+	{ "bright_blue", 0x5aff, 0x5c5cff },
+	{ "bright_magenta", 0xf81f, 0xff00ff },
+	{ "bright_cyan", 0x07ff, 0x00ffff },
+	{ "bright_white", 0xffff, 0xffffff },
 };
 
 struct win_layout layout;
 static struct lua_callback layout_cbdata[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
 static struct lua_callback render_cbdata[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
+static struct lua_callback input_cbdata[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
 
-static int win_newmain(lua_State *L) {
-	int z_index = luaL_checkinteger(L, 1);
-	if (z_index < 0 || z_index > 255)
-		return luaL_argerror(L, 1, "invalid z-index range");
+/* == ARBINARY TYPE HELPERS */
 
-	int handle = win_layout_new_main(&layout, z_index);
-	if (handle < 0)
-		return luaL_error(L, "cannot create window: %s", strerror(-handle));
-
-	lua_pushinteger(L, handle);
-	return 1;
-}
-
-static int win_newdialog(lua_State *L) {
-	int z_index = luaL_checkinteger(L, 1);
-	if (z_index < 0 || z_index > 255)
-		return luaL_argerror(L, 1, "invalid z-index range");
-	int width = luaL_checkinteger(L, 2);
-	int height = luaL_checkinteger(L, 3);
-
-	int handle = win_layout_new_dialog(&layout, z_index, width, height);
-	if (handle < 0)
-		return luaL_error(L, "cannot create window: %s", strerror(-handle));
-
-	lua_pushinteger(L, handle);
-	return 1;
-}
-
-static int win_newedge(lua_State *L, int (*new)(struct win_layout *, uint8_t, enum win_edge, int)) {
-	int z_index = luaL_checkinteger(L, 1);
-	if (z_index < 0 || z_index > 255)
-		return luaL_argerror(L, 1, "invalid z-index range");
-	const char *edgename = luaL_checkstring(L, 2);
-	int size = luaL_checkinteger(L, 3);
-
-	enum win_edge edge;
-	if (strcmp(edgename, "left") == 0) {
-		edge = WIN_EDGE_LEFT;
-	} else if (strcmp(edgename, "right") == 0) {
-		edge = WIN_EDGE_RIGHT;
-	} else if (strcmp(edgename, "top") == 0) {
-		edge = WIN_EDGE_TOP;
-	} else if (strcmp(edgename, "bottom") == 0) {
-		edge = WIN_EDGE_BOTTOM;
-	} else {
-		return luaL_argerror(L, 4, "invalid edge");
-	}
-
-	int handle = new(&layout, z_index, edge, size);
-	if (handle < 0)
-		return luaL_error(L, "cannot create window: %s", strerror(-handle));
-
-	lua_pushinteger(L, handle);
-	return 1;
-}
-
-static int win_newclip(lua_State *L) {
-	return win_newedge(L, win_layout_new_clip);
-}
-
-static int win_newoverlay(lua_State *L) {
-	return win_newedge(L, win_layout_new_overlay);
-}
-
-static int win_remove(lua_State *L) {
-	int win = luaL_checkinteger(L, 1);
-
-	win_layout_remove(&layout, win);
-	return 0;
-}
-
-static void lua_layout_handler(struct win_layout *l, int win,
-                               uint16_t cols, uint16_t rows,
-                               bool visible, void *userdata) {
-	ARG_UNUSED(l);
-	ARG_UNUSED(win);
-	LOG_INF("??");
-
-	struct lua_callback *cb = userdata;
-	lua_State *L = cb->L;
-
-	lua_rawgeti(L, LUA_REGISTRYINDEX, cb->ref);
-
-	/* push args */
-	lua_pushinteger(L, cols);
-	lua_pushinteger(L, rows);
-	lua_pushboolean(L, visible);
-
-	if (lua_pcall(L, 3, 0, 0) != LUA_OK) {
-		LOG_ERR("layout callback: %s", lua_tostring(L, -1));
-		lua_pop(L, 1);
-	}
-}
-
-static int win_setlayouthandler(lua_State *L) {
-	int win = luaL_checkinteger(L, 1);
-	luaL_checktype(L, 2, LUA_TFUNCTION);
-
-	if (win < 0 || win >= CONFIG_WINDOW_LAYOUT_MAX_WINDOWS)
-		return luaL_argerror(L, 1, "invalid window handle");
-
-	struct lua_callback *cb = &layout_cbdata[win];
-
-	if (cb->ref != LUA_NOREF)
-		luaL_unref(L, LUA_REGISTRYINDEX, cb->ref);
-
-	lua_pushvalue(L, 2); /* function */
-	cb->ref = luaL_ref(L, LUA_REGISTRYINDEX);
-	cb->L = L;
-
-	win_layout_set_layout(
-	    &layout,
-	    win,
-	    lua_layout_handler,
-	    cb);
-
-	return 0;
-}
-
-
-static void push_rect(lua_State *L, struct win_rect r) {
+static void lua_pushrect(lua_State *L, struct win_rect r) {
 	lua_createtable(L, 0, 4);
 
 	lua_pushinteger(L, r.x0);
@@ -155,16 +61,248 @@ static void push_rect(lua_State *L, struct win_rect r) {
 	lua_setfield(L, -2, "y1");
 }
 
-static void lua_render_handler(struct win_layout *l, int win,
-                               struct win_rect rect, void *userdata) {
-	ARG_UNUSED(l);
-	ARG_UNUSED(win);
+static int hexchar(char chr) {
+	if (chr >= '0' && chr <= '9')
+		return chr - '0';
+	if (chr >= 'a' && chr <= 'f')
+		return chr - 'a' + 10;
+	if (chr >= 'A' && chr <= 'F')
+		return chr - 'A' + 10;
+	return -1;
+}
+
+static uint16_t rgb888_to_rgb565(uint32_t rgb) {
+	uint16_t r = (rgb >> 16) & 0xff;
+	uint16_t g = (rgb >> 8) & 0xff;
+	uint16_t b = rgb & 0xff;
+
+	return ((r >> 3) << 11) |
+	       ((g >> 2) << 5) |
+	       (b >> 3);
+}
+
+static uint16_t lua_colorto565(lua_State *L, int arg) {
+	if (lua_type(L, arg) == LUA_TNUMBER) {
+		lua_Integer rgb = luaL_checkinteger(L, arg);
+
+		if (rgb < 0 || rgb > 0xffffff)
+			return luaL_argerror(L, arg, "color out of range");
+
+		return rgb888_to_rgb565((uint32_t) rgb);
+	}
+
+	if (lua_type(L, arg) == LUA_TSTRING) {
+		const char *name = lua_tostring(L, arg);
+
+		if (name[0] == '#') {
+			name++;
+
+			int r, g, b;
+
+			switch (strlen(name)) {
+				case 3:
+					r = hexchar(name[0]);
+					g = hexchar(name[1]);
+					b = hexchar(name[2]);
+
+					if (r < 0 || g < 0 || b < 0)
+						return luaL_argerror(
+						    L, arg, "invalid color representation");
+
+					r = (r << 4) | r;
+					g = (g << 4) | g;
+					b = (b << 4) | b;
+					break;
+
+				case 6: {
+					int rh = hexchar(name[0]);
+					int rl = hexchar(name[1]);
+					int gh = hexchar(name[2]);
+					int gl = hexchar(name[3]);
+					int bh = hexchar(name[4]);
+					int bl = hexchar(name[5]);
+
+					if (rh < 0 || rl < 0 ||
+					    gh < 0 || gl < 0 ||
+					    bh < 0 || bl < 0)
+						return luaL_argerror(
+						    L, arg, "invalid color representation");
+
+					r = (rh << 4) | rl;
+					g = (gh << 4) | gl;
+					b = (bh << 4) | bl;
+					break;
+				}
+
+				default:
+					return luaL_argerror(
+					    L, arg, "invalid color representation");
+			}
+
+			uint32_t rgb =
+			    ((uint32_t) r << 16) |
+			    ((uint32_t) g << 8) |
+			    (uint32_t) b;
+
+			return rgb888_to_rgb565(rgb);
+		}
+
+		for (int i = 0; i < (int) ARRAY_SIZE(colors); i++) {
+			if (strcmp(name, colors[i].name) == 0)
+				return colors[i].rgb565;
+		}
+
+		return luaL_argerror(L, arg, "invalid color name");
+	}
+
+	return luaL_argerror(
+	    L, arg, "invalid color: expected number or string");
+}
+
+/* == FUNC HELPERS == */
+
+static struct win_state *lua_checkwindow(lua_State *L, int idx) {
+	struct win_state *w = lua_touserdata(L, idx);
+
+	if (!w || !w->used)
+		luaL_argerror(L, idx, "invalid window handle");
+
+	return w;
+}
+
+/* == IMPLEMENTATION == */
+
+static int win_new(lua_State *L) {
+	struct win_state *w = win_layout_new(&layout);
+	if (!w)
+		return luaL_error(L, "cannot create window");
+
+	lua_pushlightuserdata(L, w);
+	return 1;
+}
+
+static int win_remove(lua_State *L) {
+	struct win_state *w = lua_checkwindow(L, 1);
+
+	win_layout_remove(w);
+	return 0;
+}
+
+static int win_get(lua_State *L) {
+	struct win_state *w = lua_checkwindow(L, 1);
+	const char *key = luaL_checkstring(L, 2);
+
+	if (strcmp(key, "enabled") == 0) {
+		lua_pushboolean(L, w->enabled);
+		return 1;
+	}
+
+	if (strcmp(key, "focusable") == 0) {
+		lua_pushboolean(L, w->focusable);
+		return 1;
+	}
+
+	if (strcmp(key, "mode") == 0) {
+		switch (w->mode) {
+			case WIN_MODE_MAIN:
+				lua_pushliteral(L, "main");
+				return 1;
+			case WIN_MODE_CLIP:
+				lua_pushliteral(L, "clip");
+				return 1;
+			case WIN_MODE_OVERLAY:
+				lua_pushliteral(L, "overlay");
+				return 1;
+			case WIN_MODE_DIALOG:
+				lua_pushliteral(L, "dialog");
+				return 1;
+			default:
+				return 0;
+		}
+	}
+
+
+	if (strcmp(key, "edge") == 0) {
+		switch (w->edge) {
+			case WIN_EDGE_TOP:
+				lua_pushliteral(L, "top");
+				return 1;
+			case WIN_EDGE_BOTTOM:
+				lua_pushliteral(L, "bottom");
+				return 1;
+			case WIN_EDGE_LEFT:
+				lua_pushliteral(L, "left");
+				return 1;
+			case WIN_EDGE_RIGHT:
+				lua_pushliteral(L, "right");
+				return 1;
+			default:
+				return 0;
+		}
+	}
+
+	if (strcmp(key, "z_index") == 0) {
+		lua_pushinteger(L, w->z_index);
+		return 1;
+	}
+
+	if (strcmp(key, "width") == 0) {
+		lua_pushinteger(L, w->width);
+		return 1;
+	}
+
+	if (strcmp(key, "height") == 0) {
+		lua_pushinteger(L, w->height);
+		return 1;
+	}
+
+	if (strcmp(key, "visible") == 0) {
+		lua_pushboolean(L, w->visible);
+		return 1;
+	}
+
+	if (strcmp(key, "win_bounds") == 0) {
+		lua_pushrect(L, w->win_bounds);
+		return 1;
+	}
+
+	if (strcmp(key, "chars_bounds") == 0) {
+		lua_pushrect(L, w->chars_bounds);
+		return 1;
+	}
+
+	return luaL_error(L, "unknown window property '%s'", key);
+}
+
+
+static void lua_layout_handler(struct win_state *w,
+                               uint16_t cols, uint16_t rows,
+                               bool visible, void *userdata) {
+	ARG_UNUSED(w);
 
 	struct lua_callback *cb = userdata;
 	lua_State *L = cb->L;
 
-	lua_rawgeti(L, LUA_REGISTRYINDEX, cb->ref);
-	push_rect(L, rect);
+	lua_callback_push(cb);
+	lua_pushinteger(L, cols);
+	lua_pushinteger(L, rows);
+	lua_pushboolean(L, visible);
+
+	if (lua_pcall(L, 3, 0, 0) != LUA_OK) {
+		LOG_ERR("layout callback: %s", lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
+}
+
+static void lua_render_handler(struct win_state *w,
+                               struct win_rect rect, void *userdata) {
+	ARG_UNUSED(w);
+
+	struct lua_callback *cb = userdata;
+	lua_State *L = cb->L;
+
+	lua_callback_push(cb);
+	lua_pushrect(L, rect);
 
 	if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
 		LOG_ERR("render callback: %s", lua_tostring(L, -1));
@@ -172,68 +310,123 @@ static void lua_render_handler(struct win_layout *l, int win,
 	}
 }
 
-static int win_setrenderhandler(lua_State *L) {
-	int win = luaL_checkinteger(L, 1);
-	luaL_checktype(L, 2, LUA_TFUNCTION);
+static void lua_input_handler(struct win_state *w, union win_input_event *ev, void *userdata) {
+	ARG_UNUSED(w);
 
-	if (win < 0 || win >= CONFIG_WINDOW_LAYOUT_MAX_WINDOWS)
-		return luaL_argerror(L, 1, "invalid window handle");
+	struct lua_callback *cb = userdata;
+	lua_State *L = cb->L;
 
-	struct lua_callback *cb = &render_cbdata[win];
+	lua_callback_push(cb);
+	/* TODO: push event */
 
-	if (cb->ref != LUA_NOREF)
-		luaL_unref(L, LUA_REGISTRYINDEX, cb->ref);
-
-	lua_pushvalue(L, 2);
-	cb->ref = luaL_ref(L, LUA_REGISTRYINDEX);
-	cb->L = L;
-
-	win_layout_set_render(
-	    &layout,
-	    win,
-	    lua_render_handler,
-	    cb);
-
-	return 0;
+	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+		LOG_ERR("render callback: %s", lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
 }
 
-static int win_enable(lua_State *L) {
-	int win = luaL_checkinteger(L, 1);
-	if (win < 0 || win >= CONFIG_WINDOW_LAYOUT_MAX_WINDOWS)
-		return luaL_argerror(L, 1, "invalid window handle");
-	if (lua_type(L, 2) != LUA_TBOOLEAN)
-		return luaL_argerror(L, 2, "expected boolean");
-	bool en = lua_toboolean(L, 2);
-	win_layout_enable(&layout, win, en);
-	return 0;
-}
+#define win_index(w) ((w) - (w)->l->windows)
 
-static int win_resize(lua_State *L) {
-	int win = luaL_checkinteger(L, 1);
-	if (win < 0 || win >= CONFIG_WINDOW_LAYOUT_MAX_WINDOWS)
-		return luaL_argerror(L, 1, "invalid window handle");
-	int width = luaL_checkinteger(L, 2);
-	int height = luaL_checkinteger(L, 3);
+static int win_set(lua_State *L) {
+	struct win_state *w = lua_checkwindow(L, 1);
+	const char *key = luaL_checkstring(L, 2);
 
-	win_layout_resize(&layout, win, width, height);
-	return 0;
-}
+	if (strcmp(key, "enabled") == 0) {
+		w->enabled = lua_toboolean(L, 3);
+		return 0;
+	}
 
-static uint16_t rgb888_to_rgb565(uint32_t rgb) {
-	uint8_t r = (rgb >> 16) & 0xff;
-	uint8_t g = (rgb >> 8) & 0xff;
-	uint8_t b = rgb & 0xff;
+	if (strcmp(key, "focusable") == 0) {
+		w->focusable = lua_toboolean(L, 3);
+		return 0;
+	}
 
-	return ((uint16_t) (r >> 3) << 11) |
-	       ((uint16_t) (g >> 2) << 5) |
-	       ((uint16_t) (b >> 3));
+	if (strcmp(key, "mode") == 0) {
+		const char *mode = luaL_checkstring(L, 3);
+		if (strcmp(mode, "main") == 0) {
+			w->mode = WIN_MODE_MAIN;
+		} else if (strcmp(mode, "clip") == 0) {
+			w->mode = WIN_MODE_CLIP;
+		} else if (strcmp(mode, "overlay") == 0) {
+			w->mode = WIN_MODE_OVERLAY;
+		} else if (strcmp(mode, "dialog") == 0) {
+			w->mode = WIN_MODE_DIALOG;
+		} else {
+			return luaL_error(L, "invalid window mode: %s", mode);
+		}
+		return 0;
+	}
+
+	if (strcmp(key, "edge") == 0) {
+		const char *edge = luaL_checkstring(L, 3);
+		if (strcmp(edge, "top") == 0) {
+			w->edge = WIN_EDGE_TOP;
+		} else if (strcmp(edge, "bottom") == 0) {
+			w->edge = WIN_EDGE_BOTTOM;
+		} else if (strcmp(edge, "left") == 0) {
+			w->edge = WIN_EDGE_LEFT;
+		} else if (strcmp(edge, "right") == 0) {
+			w->edge = WIN_EDGE_RIGHT;
+		} else {
+			return luaL_error(L, "invalid window edge: %s", edge);
+		}
+		return 0;
+	}
+
+	if (strcmp(key, "z_index") == 0) {
+		w->z_index = luaL_checkinteger(L, 3);
+		return 0;
+	}
+
+	if (strcmp(key, "width") == 0) {
+		w->width = luaL_checkinteger(L, 3);
+		lua_pushinteger(L, w->width);
+		return 0;
+	}
+
+	if (strcmp(key, "height") == 0) {
+		w->height = luaL_checkinteger(L, 3);
+		return 0;
+	}
+
+	if (strcmp(key, "layout") == 0) {
+		luaL_checktype(L, 3, LUA_TFUNCTION);
+
+		struct lua_callback *cb = &layout_cbdata[win_index(w)];
+		lua_callback_set(L, cb, 3);
+
+		w->layout = lua_layout_handler;
+		w->layout_userdata = cb;
+		return 0;
+	}
+
+	if (strcmp(key, "render") == 0) {
+		luaL_checktype(L, 3, LUA_TFUNCTION);
+
+		struct lua_callback *cb = &render_cbdata[win_index(w)];
+		lua_callback_set(L, cb, 3);
+
+		w->render = lua_render_handler;
+		w->render_userdata = cb;
+		return 0;
+	}
+
+	if (strcmp(key, "input") == 0) {
+		luaL_checktype(L, 3, LUA_TFUNCTION);
+
+		struct lua_callback *cb = &input_cbdata[win_index(w)];
+		lua_callback_set(L, cb, 3);
+
+		w->input = lua_input_handler;
+		w->input_userdata = cb;
+		return 0;
+	}
+
+	return luaL_error(L, "unknown or read-only window property '%s'", key);
 }
 
 static int win_drawchar(lua_State *L) {
-	int win = luaL_checkinteger(L, 1);
-	if (win < 0 || win >= CONFIG_WINDOW_LAYOUT_MAX_WINDOWS)
-		return luaL_argerror(L, 1, "invalid window handle");
-
+	struct win_state *w = lua_checkwindow(L, 1);
 	int x = luaL_checkinteger(L, 2);
 	int y = luaL_checkinteger(L, 3);
 
@@ -288,27 +481,13 @@ static int win_drawchar(lua_State *L) {
 
 	/* foreground */
 	if (lua_getfield(L, 4, "fg") != LUA_TNIL) {
-		lua_Integer fg = luaL_checkinteger(L, -1);
-
-		if (fg < 0 || fg > 0xffffff) {
-			lua_pop(L, 1);
-			return luaL_argerror(L, 4, "fg must be a 32-bit color");
-		}
-
-		ch.fg = rgb888_to_rgb565((uint32_t) fg);
+		ch.fg = lua_colorto565(L, -1);
 	}
 	lua_pop(L, 1);
 
 	/* background */
 	if (lua_getfield(L, 4, "bg") != LUA_TNIL) {
-		lua_Integer bg = luaL_checkinteger(L, -1);
-
-		if (bg < 0 || bg > 0xffffff) {
-			lua_pop(L, 1);
-			return luaL_argerror(L, 4, "bg must be a 32-bit color");
-		}
-
-		ch.bg = rgb888_to_rgb565((uint32_t) bg);
+		ch.bg = lua_colorto565(L, -1);
 	}
 	lua_pop(L, 1);
 
@@ -335,28 +514,32 @@ static int win_drawchar(lua_State *L) {
 	}
 	lua_pop(L, 1);
 
-	win_layout_draw_char(&layout, win, x, y, ch);
+	win_layout_draw_char(w, x, y, ch);
+	return 0;
+}
+
+static int win_update(lua_State *L) {
+	struct win_state *w = lua_checkwindow(L, 1);
+
+	win_layout_update(w->l);
 	return 0;
 }
 
 static const luaL_Reg windowlib[] = {
-	{ "newmain", win_newmain },
-	{ "newdialog", win_newdialog },
-	{ "newclip", win_newclip },
-	{ "newoverlay", win_newoverlay },
+	{ "new", win_new },
 	{ "remove", win_remove },
-	{ "setlayouthandler", win_setlayouthandler },
-	{ "setrenderhandler", win_setrenderhandler },
-	{ "enable", win_enable },
-	{ "resize", win_resize },
+	{ "get", win_get },
+	{ "set", win_set },
 	{ "drawchar", win_drawchar },
+	{ "update", win_update },
 	{ 0 }
 };
 
 static int luaopen_windowlib(lua_State *L) {
 	for (int i = 0; i < CONFIG_WINDOW_LAYOUT_MAX_WINDOWS; i++) {
-		layout_cbdata[i].ref = LUA_NOREF;
-		render_cbdata[i].ref = LUA_NOREF;
+		lua_callback_init(&layout_cbdata[i]);
+		lua_callback_init(&render_cbdata[i]);
+		lua_callback_init(&input_cbdata[i]);
 	}
 
 	luaL_newlib(L, windowlib);
@@ -365,17 +548,9 @@ static int luaopen_windowlib(lua_State *L) {
 
 void luaclose_windowlib(lua_State *L) {
 	for (int i = 0; i < CONFIG_WINDOW_LAYOUT_MAX_WINDOWS; i++) {
-		layout_cbdata[i].L = NULL;
-		if (layout_cbdata[i].ref != LUA_NOREF) {
-			luaL_unref(L, LUA_REGISTRYINDEX, layout_cbdata[i].ref);
-			layout_cbdata[i].ref = LUA_NOREF;
-		}
-
-		render_cbdata[i].L = NULL;
-		if (render_cbdata[i].ref != LUA_NOREF) {
-			luaL_unref(L, LUA_REGISTRYINDEX, render_cbdata[i].ref);
-			render_cbdata[i].ref = LUA_NOREF;
-		}
+		lua_callback_clear(&layout_cbdata[i]);
+		lua_callback_clear(&render_cbdata[i]);
+		lua_callback_clear(&input_cbdata[i]);
 	}
 }
 

@@ -43,7 +43,7 @@ LUAMOD_API int (luaopen_math) (lua_State *L);
 // LUAMOD_API int (luaopen_os) (lua_State *L);
 
 #define LUA_STRLIBNAME	"string"
-#define LUA_STRLIBK	(LUA_IOLIBK << 1)
+#define LUA_STRLIBK	(LUA_MATHLIBK << 1)
 LUAMOD_API int (luaopen_string) (lua_State *L);
 
 #define LUA_TABLIBNAME	"table"

@@ -1,60 +1,102 @@
-local native = require("termlet._core.window")
+local core = require "termlet._core.window"
 
 local Window = {}
-Window.__index = Window
 
-local function new(handle)
+Window.__index = function(self, key)
+	local method = rawget(Window, key)
+	if method ~= nil then
+		return method
+	end
+
+	return core.get(self._handle, key)
+end
+
+Window.__newindex = function(self, key, value)
+	if key == "_handle" then
+		rawset(self, key, value)
+		return
+	end
+
+	core.set(self._handle, key, value)
+end
+
+local function new()
 	return setmetatable({
-		_handle = handle,
+		_handle = core.new(),
 	}, Window)
 end
 
 function Window.new_main(z_index)
-	return new(native.newmain(z_index))
+	local w = new()
+	w.mode = "main"
+	w.z_index = z_index
+	w:update()
+	return w
 end
 
 function Window.new_dialog(z_index, width, height)
-	return new(native.newdialog(z_index, width, height))
+	local w = new()
+	w.mode = "dialog"
+	w.z_index = z_index
+	w.width = width
+	w.height = height
+	w:update()
+	return w
 end
 
 function Window.new_clip(z_index, edge, size)
-	return new(native.newclip(z_index, edge, size))
+	local w = new()
+	w.mode = "clip"
+	w.z_index = z_index
+	w.edge = edge
+	w.width = size
+	w.height = size
+	w:update()
+	return w
 end
 
 function Window.new_overlay(z_index, edge, size)
-	return new(native.newoverlay(z_index, edge, size))
+	w = new()
+	w.mode = "overlay"
+	w.z_index = z_index
+	w.edge = edge
+	w.width = size
+	w.height = size
+	w:update()
+	return w
 end
 
-function Window:on(event, fn)
-	if event == "layout" then
-		native.setlayouthandler(self._handle, fn)
-	elseif event == "render" then
-		native.setrenderhandler(self._handle, fn)
-	else
-		error("unsupported window event: " .. tostring(event), 2)
-	end
-
-	return self
+function Window:update()
+	core.update(self._handle)
 end
 
 function Window:remove()
-	native.remove(self._handle)
+	core.remove(self._handle)
 	self._handle = nil
 end
 
-function Window:enable(en)
-	native.enable(self._handle, en)
-	return self
-end
-
-function Window:resize(width, height)
-	native.resize(self._handle, width, height)
-	return self
-end
-
 function Window:draw_char(x, y, char)
-	native.drawchar(self._handle, x, y, char)
+	core.drawchar(self._handle, x, y, char)
 	return self
+end
+
+function Window:on(event, fn)
+	if event ~= "layout" and event ~= "render" and event ~= "input" then
+		error("unsupported window event: " .. tostring(event), 2)
+	end
+
+	self[event] = fn
+	return self
+end
+
+function Window:attach(b)
+	self:on("render", function(...)
+		b:render(self, ...)
+	end)
+	self:on("layout", function(...)
+		b:layout(self, ...)
+	end)
+	self:update()
 end
 
 return Window

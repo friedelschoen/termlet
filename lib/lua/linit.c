@@ -5,6 +5,7 @@
 */
 
 
+#include "zephyr/sys/printk.h"
 #define linit_c
 #define LUA_LIB
 
@@ -32,7 +33,6 @@ static const luaL_Reg stdlibs[] = {
   {LUA_DBLIBNAME, luaopen_debug},
   {LUA_IOLIBNAME, luaopen_io},
   {LUA_MATHLIBNAME, luaopen_math},
-  // {LUA_OSLIBNAME, luaopen_os},
   {LUA_STRLIBNAME, luaopen_string},
   {LUA_TABLIBNAME, luaopen_table},
   {LUA_UTF8LIBNAME, luaopen_utf8},

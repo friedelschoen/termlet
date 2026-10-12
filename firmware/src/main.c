@@ -130,9 +130,9 @@ static int openlibs(lua_State *L) {
 	        LUA_TABLIBK |
 	        LUA_MATHLIBK |
 	        LUA_IOLIBK,
-	    0);
+	    1);
 
-	corelib_register(L);
+    corelib_register(L);
 
 	return 0;
 }

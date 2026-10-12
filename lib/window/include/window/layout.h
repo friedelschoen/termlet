@@ -103,6 +103,8 @@ struct win_state {
 	void *input_userdata;
 
 	/* set by layout_win_apply(). NO TOUCHY TOUCHY! */
+	struct win_state *prev;       /**< READONLY. next window (see win_layout_update()) */
+	struct win_state *next;       /**< READONLY. previous window (see win_layout_update()) */
 	bool used;                    /**< READONLY. if this slot is being used */
 	bool visible;                 /**< READONLY. whether window is visible and not shadowed */
 	struct win_rect win_bounds;   /**< READONLY. window bounds, incl. border */
@@ -112,8 +114,8 @@ struct win_state {
 struct win_layout {
 	struct win_state windows[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
 
-	struct win_state *draw_order[CONFIG_WINDOW_LAYOUT_MAX_WINDOWS];
-	int draw_count;
+	struct win_state *head;
+	struct win_state *tail;
 
 	struct win_rect bounds;
 	struct win_rect dirty;
